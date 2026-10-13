@@ -1,1 +1,209 @@
 # studybuddy
+
+Turn lecture videos into an MP3 of the audio and a transcript, locally on an Apple silicon
+Mac. Nothing is uploaded anywhere, and no API keys are needed.
+
+```console
+$ studybuddy transcribe lecture.mp4 --formats txt,srt
+lecture.mp4: 1:02:13 of audio; accurate mode (Qwen3-ASR 1.7B)
+Extracting the audio to lecture.mp3
+extract    100%  done in 0:09
+Loading mlx-community/Qwen3-ASR-1.7B-8bit
+Loaded mlx-community/Qwen3-ASR-1.7B-8bit in 1.0 s
+section 1/6 (0:00:00-0:10:02) done in 24.6 s
+...
+transcribe 100%  done in 2:31
+Done in 2:43 (23x real time): 63 segments; language: English
+lecture.mp3
+lecture.txt
+lecture.srt
+```
+
+## What it does
+
+1. Checks the input with `ffprobe` and stops with a clear error if it has no audio track.
+2. Extracts the first audio track to `lecture.mp3` (mono, 96 kbps, about 43 MB per hour).
+3. Decodes the MP3 to 16 kHz mono and cuts it into sections of about 10 minutes, at quiet points.
+4. Transcribes each section with a speech model running on the GPU through
+   [mlx-audio](https://github.com/Blaizzy/mlx-audio). Each finished section is saved right
+   away, so an interrupted run can resume (see [Resuming](#resuming)).
+5. Writes the transcript as `.txt` and, if you ask for them, `.srt` and `.json`.
+
+The design, the model choice and the measurements behind it are in
+[plans/mp4-transcription-plan.md](plans/mp4-transcription-plan.md).
+
+## Requirements
+
+- A Mac with Apple silicon (M1 or later). MLX does not run on Intel Macs.
+- Python 3.12 or later.
+- ffmpeg with the `libmp3lame` encoder: `brew install ffmpeg`.
+- About 5 GB of disk space for the two models (about 2.5 GB each). Each one is downloaded
+  into `~/.cache/huggingface` the first time its mode is used.
+
+## Install
+
+```sh
+python3 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
+```
+
+This installs the `studybuddy` command into `.venv/bin`. Either call `.venv/bin/studybuddy`
+directly or activate the environment first (`source .venv/bin/activate`).
+`python -m studybuddy` works as well.
+
+## Usage
+
+```
+studybuddy transcribe INPUT [--mode accurate|fast] [--language L]
+                            [--formats txt,srt,json] [--hotwords-file F]
+                            [--out-dir D] [-v | -q]
+```
+
+| Option | Meaning |
+|---|---|
+| `INPUT` | A video or audio file: MP4, MOV, MKV, M4A, MP3, and anything else ffmpeg reads. |
+| `--mode` | `accurate` (the default) or `fast`. See [Modes](#modes). |
+| `--language L` | The spoken language, as a name or code: `English`, `en`, `fr`, `pt-BR`, ... By default it is detected. Used in accurate mode only. |
+| `--formats` | A comma-separated list of transcript formats from `txt`, `srt` and `json`. The default is `txt`. |
+| `--hotwords-file F` | Names and technical terms the model should favour. Used in accurate mode only. See [Hotwords](#hotwords). |
+| `--out-dir D` | Where to write the outputs. The default is the folder the input is in. |
+| `-v`, `--verbose` | Also show debug messages, such as the exact ffmpeg commands. |
+| `-q`, `--quiet` | Show only warnings and errors. The output paths are still printed. |
+
+Examples:
+
+```sh
+# A plain-text transcript next to the video
+studybuddy transcribe lecture.mp4
+
+# Fast mode, with subtitles and JSON, into another folder
+studybuddy transcribe lecture.mp4 --mode fast --formats txt,srt,json --out-dir transcripts/
+
+# A French lecture, with the course's vocabulary as hotwords
+studybuddy transcribe cours.mp4 --language fr --hotwords-file vocabulaire.txt
+
+# Every MP4 in a folder
+for f in lectures/*.mp4; do studybuddy transcribe "$f" --formats txt,srt; done
+```
+
+Progress and messages go to stderr. In a terminal they appear as one line that keeps
+updating; when stderr goes to a file or a pipe, a plain line is printed every so often
+instead. Once everything has been written, the paths of the output files go to stdout, one
+per line.
+
+## Modes
+
+| | `accurate` (default) | `fast` |
+|---|---|---|
+| Model | [Qwen3-ASR 1.7B](https://huggingface.co/Qwen/Qwen3-ASR-1.7B) (`mlx-community/Qwen3-ASR-1.7B-8bit`) | [Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) (`mlx-community/parakeet-tdt-0.6b-v3`) |
+| Speed on an M4 (32 GB) | about 22 to 26 times real time: a 2.5-hour file takes about 6 minutes | about 50 to 70 times real time: a 2.5-hour file takes about 2.5 minutes |
+| Segments | one per chunk of about 60 seconds | one per sentence |
+| Languages | 30, detected automatically or set with `--language` | 25 European languages, always detected automatically |
+| Hotwords | supported | not supported (ignored with a warning) |
+| License | Apache 2.0 | CC-BY-4.0 (credit NVIDIA if you publish its output) |
+
+Accurate mode has the lowest error rate of the downloadable models compared in the plan.
+Because it is LLM-based, its output also goes through some safety checks; see
+[Safety checks](#safety-checks). Fast mode is not an LLM, so it cannot get stuck repeating
+itself, and its sentence-level timestamps make better subtitles.
+
+`--language` accepts these languages in accurate mode, by English name or ISO code:
+Arabic, Cantonese, Chinese, Czech, Danish, Dutch, English, Filipino, Finnish, French,
+German, Greek, Hindi, Hungarian, Indonesian, Italian, Japanese, Korean, Macedonian, Malay,
+Persian, Polish, Portuguese, Romanian, Russian, Spanish, Swedish, Thai, Turkish and
+Vietnamese. Fast mode ignores `--language`, with a warning.
+
+## Output files
+
+For `lecture.mp4` the outputs are written to the same folder, or to `--out-dir`:
+
+| File | Contents |
+|---|---|
+| `lecture.mp3` | The first audio track, mono, 96 kbps. It keeps the video's timeline: if the audio track starts late or has gaps, they are filled with silence, so transcript times match the video. |
+| `lecture.txt` | The transcript, one paragraph per segment. |
+| `lecture.srt` | Subtitles, one cue per segment (requested with `--formats ...,srt`). |
+| `lecture.json` | `{source, model, mode, language, duration_s, segments: [{start, end, text, language}]}`, with times in seconds (requested with `--formats ...,json`). |
+
+Each file is written to a temporary name first and renamed once it is complete, so a file
+with the final name is never half-written.
+
+## Resuming
+
+While a run is in progress, finished sections are saved in `lecture.partial.jsonl`. If the
+run is stopped (with Ctrl-C, a crash or a reboot), run **the same command** again. It
+extracts `lecture.mp3` again (about 11 s per hour of video), skips every section that
+is already finished, and continues from there. Ctrl-C says where the progress was saved
+and exits with status 130.
+
+Saved sections are reused only if the audio and every setting that affects the transcript
+(mode, model, language, hotwords and the model settings) are unchanged. An unchanged video
+always gives an identical MP3, while a replaced video, or a different recording that happens
+to have the same name and output folder, does not. In that case studybuddy prints a warning
+and starts over. `lecture.partial.jsonl` is deleted once all the outputs are written.
+
+## Hotwords
+
+A hotwords file lists names and terms that the model might otherwise misspell, one per
+line. Blank lines and lines that start with `#` are ignored.
+
+```
+# Linear algebra, week 3
+eigenvalue
+Gram-Schmidt
+Hilbert space
+```
+
+Accurate mode adds the terms to the model's prompt. Fast mode does not support hotwords.
+
+## Safety checks
+
+- **Repetition.** An accurate-mode chunk that has more than about 300 words per minute of
+  audio, or that repeats the same short phrase many times, is transcribed again with a
+  repetition penalty.
+- **Missing text.** If a stretch of audio has clear sound but no text, studybuddy logs a
+  warning. In fast mode it first transcribes that stretch again on its own.
+- **Invented text over silence.** Accurate mode drops any text produced over digitally
+  silent audio.
+- **Silent truncation.** Accurate mode gives each model call a token budget of 25 tokens per
+  second of audio, at most 8192. That is several times what even fast speech needs, and it
+  limits how long a chunk that loops can keep generating (to 1500 tokens when a 60-second
+  chunk is transcribed again on its own). If a call runs out of its budget, the affected
+  chunks are transcribed again one at a time.
+
+These checks report what they did as warnings on stderr.
+
+## Exit status
+
+| Status | Meaning |
+|---|---|
+| 0 | Success. |
+| 1 | An error: a missing or unreadable input, a file with no audio track, a bad option, an unsupported language, and so on. The message says what went wrong. |
+| 130 | Interrupted with Ctrl-C. Run the same command again to resume. studybuddy ends by the interrupt signal, as programs should, so a shell script or `for` loop that runs it stops too. |
+
+## Running the tests
+
+```sh
+.venv/bin/pytest                                      # unit tests, about 10 s
+STUDYBUDDY_MODEL_TESTS=1 .venv/bin/pytest -m model -s  # only the real-model tests, about 35 s
+STUDYBUDDY_MODEL_TESTS=1 .venv/bin/pytest              # everything
+```
+
+The unit tests replace the speech models with fakes, but run everything else for real. The
+tests marked `model` load both real models (which must be downloaded already) and check
+the word error rate on generated speech. The `-s` flag shows the measured word error rates
+and timings. The test media is generated with the macOS `say` command and ffmpeg, so the
+tests need both.
+
+## Project layout
+
+```
+src/studybuddy/
+  cli.py          # the `studybuddy transcribe` command
+  audio.py        # ffprobe checks, MP3 extraction with progress, decoding to 16 kHz
+  transcribe.py   # the Transcriber interface; Qwen3Transcriber and ParakeetTranscriber
+  pipeline.py     # sections, saving and resuming, progress, offsets
+  output.py       # .txt / .srt / .json writers
+  types.py        # Segment, Transcript
+tests/            # pytest suite; media.py generates the test audio and video
+plans/            # the implementation plan
+```
