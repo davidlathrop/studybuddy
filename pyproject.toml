@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "studybuddy"
+version = "0.1.0"
+description = "Turn MP4 lectures into MP3 audio and transcripts, locally on Apple silicon."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "mlx-audio[stt]>=0.5.8,<0.6",
+    "numpy>=1.26.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "jiwer>=3",
+]
+
+[project.scripts]
+studybuddy = "studybuddy.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "model: loads a real ASR model (slow; runs only when STUDYBUDDY_MODEL_TESTS=1)",
+]
