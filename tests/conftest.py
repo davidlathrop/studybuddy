@@ -9,6 +9,13 @@ import pytest
 import media
 
 MODEL_TESTS_ENV = "STUDYBUDDY_MODEL_TESTS"
+OFFICE_TESTS_ENV = "STUDYBUDDY_OFFICE_TESTS"
+
+# marker -> (environment variable that enables it, why it is off by default)
+_GATED = {
+    "model": (MODEL_TESTS_ENV, "loads a real ASR model"),
+    "office": (OFFICE_TESTS_ENV, "drives PowerPoint/Word"),
+}
 
 
 def model_tests_enabled() -> bool:
@@ -16,14 +23,15 @@ def model_tests_enabled() -> bool:
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    if model_tests_enabled():
-        return
-    skip = pytest.mark.skip(reason=f"loads a real ASR model; set {MODEL_TESTS_ENV}=1 to run")
-    for item in items:
-        # get_closest_marker, not `"model" in item.keywords`: keywords also hold test names
-        # and parametrize ids, so a test merely named "...model..." would be skipped.
-        if item.get_closest_marker("model") is not None:
-            item.add_marker(skip)
+    for marker, (env, reason) in _GATED.items():
+        if os.environ.get(env) == "1":
+            continue
+        skip = pytest.mark.skip(reason=f"{reason}; set {env}=1 to run")
+        for item in items:
+            # get_closest_marker, not `marker in item.keywords`: keywords also hold test names
+            # and parametrize ids, so a test merely named "...model..." would be skipped.
+            if item.get_closest_marker(marker) is not None:
+                item.add_marker(skip)
 
 
 @pytest.fixture(scope="session")

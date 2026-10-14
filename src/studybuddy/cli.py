@@ -14,7 +14,6 @@ from __future__ import annotations
 import argparse
 import logging
 import math
-import os
 import sys
 import threading
 import time
@@ -24,27 +23,19 @@ from pathlib import Path
 from types import TracebackType
 from typing import NoReturn, TextIO
 
-from studybuddy import __version__, audio, output, pipeline, transcribe
-from studybuddy.types import Transcript
+from studybuddy import __version__, audio, commands, output, transcribe
+from studybuddy.ingest.model import IngestError
+from studybuddy.library import LibraryError
+from studybuddy.transcription import MODEL_NAMES, transcribe_media
 
 log = logging.getLogger(__name__)
 
 EXIT_ERROR = 1
 EXIT_INTERRUPTED = 130  # 128 + SIGINT, the status shells report for Ctrl-C
 
-MODEL_NAMES = {"accurate": "Qwen3-ASR 1.7B", "fast": "Parakeet TDT 0.6B v3"}
-
 
 class CliError(Exception):
     """A problem with the command line or its inputs, reported without a traceback."""
-
-
-class _Interrupted(KeyboardInterrupt):
-    """Ctrl-C, carrying the partial file that holds the finished sections (if there is one)."""
-
-    def __init__(self, partial: Path | None) -> None:
-        super().__init__()
-        self.partial = partial
 
 
 # --------------------------------------------------------------------------- arguments
@@ -60,12 +51,23 @@ class _Parser(argparse.ArgumentParser):
 def build_parser() -> argparse.ArgumentParser:
     parser = _Parser(
         prog="studybuddy",
-        description="Turn lecture videos into MP3 audio and transcripts, locally on Apple silicon.",
+        description=(
+            "Transcribe lecture videos locally on Apple silicon, and build a semester library of "
+            "videos, slides, PDFs and Word files to search during an open-book exam."
+        ),
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    commands = parser.add_subparsers(dest="command", metavar="COMMAND", required=True)
+    subcommands = parser.add_subparsers(dest="command", metavar="COMMAND", required=True)
 
-    cmd = commands.add_parser(
+    common = _Parser(add_help=False)
+    common.add_argument(
+        "--library", type=Path, metavar="PATH",
+        help="library folder (default: $STUDYBUDDY_LIBRARY, the folder you are in, or the default library)",
+    )
+    _add_chatter(common)
+    commands.register(subcommands, common)
+
+    cmd = subcommands.add_parser(
         "transcribe",
         help="extract a video's audio as MP3 and transcribe it",
         description=(
@@ -97,13 +99,17 @@ def build_parser() -> argparse.ArgumentParser:
     cmd.add_argument(
         "--out-dir", type=Path, metavar="D", help="where to write the outputs (default: next to INPUT)"
     )
-    chatter = cmd.add_mutually_exclusive_group()
+    _add_chatter(cmd)
+    cmd.set_defaults(run=_transcribe_command)
+    return parser
+
+
+def _add_chatter(parser: argparse.ArgumentParser) -> None:
+    chatter = parser.add_mutually_exclusive_group()
     chatter.add_argument("-v", "--verbose", action="store_true", help="also show debug messages")
     chatter.add_argument(
         "-q", "--quiet", action="store_true", help="show only warnings and errors, no progress"
     )
-    cmd.set_defaults(run=_transcribe_command)
-    return parser
 
 
 def parse_formats(value: str) -> list[str]:
@@ -129,89 +135,20 @@ def read_hotwords(path: Path) -> list[str]:
     return list(dict.fromkeys(t for t in terms if t and not t.startswith("#")))
 
 
-def resolve_language(language: str | None, mode: str) -> str | None:
-    """The language to pass on: Qwen3-ASR's name for it in accurate mode, None in fast mode.
-
-    Raises ValueError for a language accurate mode does not support.
-    """
-    if mode == "accurate":
-        return transcribe.normalize_language(language)
-    if language is not None and language.strip().lower() not in ("", "auto"):
-        log.warning("fast mode (Parakeet) detects the language itself; ignoring --language %s", language)
-    return None
-
-
 # --------------------------------------------------------------------------- the command
 
 
 def _transcribe_command(args: argparse.Namespace, display: _Display) -> int:
     src: Path = args.input.expanduser()
-    mode: str = args.mode
-    # Check everything that can be checked cheaply before spending time on extraction.
-    language = resolve_language(args.language, mode)
     hotwords = read_hotwords(args.hotwords_file.expanduser()) if args.hotwords_file else []
-    if hotwords and mode == "fast":
-        log.warning("fast mode (Parakeet) does not support hotwords; ignoring --hotwords-file")
-        hotwords = []
-    info = audio.probe(src)
-
     out_dir = args.out_dir.expanduser() if args.out_dir else src.parent
-    mp3 = out_dir / f"{src.stem}.mp3"
-    partial = out_dir / f"{src.stem}.partial.jsonl"
-    length = _clock(info.duration_s) if info.duration_s else "unknown length"
-    log.info("%s: %s of audio; %s mode (%s)", src.name, length, mode, MODEL_NAMES[mode])
-    if info.audio_streams > 1:
-        log.info("%s has %d audio tracks; using the first", src.name, info.audio_streams)
-
-    started = time.monotonic()
-    try:
-        _prepare_mp3(src, mp3, info, display)
-        transcriber = transcribe.make_transcriber(mode)
-        if callable(load := getattr(transcriber, "load", None)):
-            log.info("Loading %s", transcriber.model_id)
-            load()
-        with display.stage("transcribe"):
-            result = pipeline.transcribe_file(
-                mp3, transcriber, mode=mode, language=language, hotwords=hotwords or None,
-                partial_path=partial, on_progress=display.update, source=src.name,
-            )
-        paths = output.write_outputs(result, out_dir / src.stem, args.formats)
-    except KeyboardInterrupt:
-        raise _Interrupted(partial if partial.exists() else None) from None
-    partial.unlink(missing_ok=True)  # only once every output is safely written
-
-    _summarize(result, time.monotonic() - started)
-    for path in (mp3, *paths):
+    result = transcribe_media(
+        src, out_dir, mode=args.mode, formats=args.formats, language=args.language,
+        hotwords=hotwords, progress=display,
+    )
+    for path in (result.mp3, *result.paths):
         print(path, flush=True)
     return 0
-
-
-def _prepare_mp3(src: Path, mp3: Path, info: audio.MediaInfo, display: _Display) -> None:
-    if _same_file(src, mp3):
-        log.info("%s is already the MP3; nothing to extract", src.name)
-        return
-    # Extract even when resuming. The resume key hashes the MP3 and extraction is
-    # deterministic, so the same INPUT resumes, while a different recording that happens
-    # to share the name (or a replaced video) changes the key and starts over.
-    log.info("Extracting the audio to %s", mp3)
-    with display.stage("extract"):
-        audio.extract_mp3(src, mp3, duration_s=info.duration_s, on_progress=display.update)
-
-
-def _summarize(result: Transcript, elapsed: float) -> None:
-    if not result.segments:
-        log.warning("no speech was recognized in %s", result.source)
-    speed = f" ({result.duration_s / elapsed:.0f}x real time)" if elapsed > 0 and result.duration_s else ""
-    language = f"; language: {result.language}" if result.language else ""
-    count = len(result.segments)
-    log.info("Done in %s%s: %d segment%s%s", _clock(elapsed), speed, count, "" if count == 1 else "s", language)
-
-
-def _same_file(a: Path, b: Path) -> bool:
-    try:
-        return b.exists() and os.path.samefile(a, b)
-    except OSError:
-        return False
 
 
 # --------------------------------------------------------------------------- progress
@@ -495,7 +432,7 @@ def _main(argv: list[str] | None) -> int:
             else:
                 display.message("Interrupted before any transcription was saved.")
             return EXIT_INTERRUPTED
-        except (CliError, audio.AudioError, ValueError, OSError) as exc:
+        except (CliError, audio.AudioError, LibraryError, IngestError, ValueError, OSError) as exc:
             log.debug("error details", exc_info=True)
             display.message(f"studybuddy: error: {exc}")
             return EXIT_ERROR

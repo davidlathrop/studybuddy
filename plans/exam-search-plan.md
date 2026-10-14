@@ -1,6 +1,6 @@
 # Exam Search: Implementation Plan
 
-_Status: plan only, nothing implemented yet. Research done 2026-10-14._
+_Status: E0 (enrichment pilot) and E1 (library and ingestion) done 2026-10-14; see [e0-results.md](e0-results.md). E2 onwards not started._
 _Builds on the transcription pipeline in [mp4-transcription-plan.md](mp4-transcription-plan.md), which is implemented on branch `feature/mp4-transcription`._
 
 ## 1. Goal and hard constraints
@@ -12,7 +12,7 @@ _Builds on the transcription pipeline in [mp4-transcription-plan.md](mp4-transcr
 | # | Constraint | What it means for the design |
 |---|---|---|
 | C1 | **No AI during the exam** | The exam app runs only classic search code (word-matching search with relevance ranking, string matching, graph lookups). It cannot load or call any AI library, and it can prove that (§8). |
-| C2 | AI is allowed **before** the exam | Transcription (already built), enrichment, and knowledge-graph building all happen during the semester. Enrichment uses Claude on AWS Bedrock. |
+| C2 | AI is allowed **before** the exam | Transcription (already built), enrichment, and knowledge-graph building all happen during the semester. Enrichment uses Claude Opus 5.5 through `claude -p` (Bedrock optional). |
 | C3 | **Offline during the exam** | Videos, documents, the index and every web asset live on the laptop. The app works with Wi-Fi off. |
 | C4 | **Every result leads back to the original** | Each passage, concept, relation and AI-written text records which video timestamp or slide/page it came from. |
 | C5 | **AI-written text is labelled and checked** | Every AI claim must quote the source word for word, and the quote is checked by string matching. Claims whose quote isn't found are hidden. AI text is always shown labelled, next to the original. |
@@ -28,7 +28,7 @@ The work splits into two halves that share only data files.
  MP4 ──transcribe (Qwen3-ASR, existing)──▶ transcript.json ─┐
  PPTX/PDF/DOCX ──extract + OCR + convert to PDF────────────┴─▶ passages ──▶ library.sqlite
                                                                   │            (everything, incl.
-                                         Claude on Bedrock ──enrich┘             every AI run + its
+                                  Claude Opus 5.5 (claude -p) ──enrich┘             every AI run + its
                                          Titan embeddings ──merge duplicate concepts   provenance)
                                                                   │
                                                        build-exam (no AI)
@@ -41,7 +41,7 @@ The work splits into two halves that share only data files.
                  └───────────────────────────────────────────────────────────────────┘
 ```
 
-- **Builder:** the existing `studybuddy` package, extended. It has the AI dependencies (mlx-audio, anthropic, boto3).
+- **Builder:** the existing `studybuddy` package, extended. It has the AI dependencies (mlx-audio for transcription; the `claude` CLI, plus anthropic and boto3 for the optional Bedrock backend).
 - **Exam app:** a **separate package and separate virtualenv** (`studybuddy-exam`) whose only dependencies are starlette, uvicorn, rapidfuzz and jellyfish. Its code cannot import the builder package.
 - **The hand-off file:** `exam.sqlite`, a read-only file holding only checked content. Its SHA-256 is shown in the exam app.
 
@@ -69,12 +69,13 @@ The work splits into two halves that share only data files.
 Adapted from the knowledge-graph research (provenance first: every AI output points to its run and its source passage):
 
 ```
-course(id, slug, title)
-source(id, course_id, kind[video|pptx|pdf|docx], title, week, date, path, view_path,
-       duration_s, page_count, sha256)
+course(id, slug, title, created_at)                          -- E1: built (schema v1)
+source(id, course_id, kind[video|pptx|pdf|docx], title, week, date,
+       original_path, stored_path, view_path,               -- stored: library copy / transcript
+       duration_s, page_count, sha256, extractor, warnings, added_at)
 passage(id, source_id, ord, t_start_ms, t_end_ms,          -- video
         slide_no, page_no, heading_path,                     -- documents
-        text, text_sha)
+        origin[speech|text|notes|ocr], text, text_sha)
 run(id, task, prompt_version, model_id, params_json, schema_ver, input_sha, created_at,
     input_tokens, output_tokens, cache_read_tokens, cost_usd)
 active_run(task, run_id)                                     -- which run feeds the exam index
@@ -127,30 +128,42 @@ merge_log(from_id, into_id, method[exact|alias|llm|user], score, run_id, ts)
   - Fallback: `brew install --cask libreoffice` with `ExportHiddenSlides=true`. This is untested and renders less faithfully.
 - Avoid PyMuPDF because of its AGPL license.
 
-## 6. Enrichment with Claude on AWS Bedrock (before the exam)
+## 6. Enrichment with Claude (before the exam)
 
-### 6.1 Client and setup (checked against this account)
+**Decided 2026-10-14, after the E0 pilot ([e0-results.md](e0-results.md)):** enrichment runs on **Claude Opus 5.5 through `claude -p`**, using your Claude subscription. Bedrock stays available as an optional backend (§6.7).
 
-- **Install:** `pip install "anthropic[bedrock]>=1.14"` into the builder venv. `AnthropicBedrockMantle` needs at least SDK 0.91, and 1.x uses `httpx2`.
-- **Client:** `AnthropicBedrockMantle(aws_profile="bedrock", aws_region="us-east-1")`.
-  - **The region must be passed explicitly.** The client doesn't read the region from `~/.aws/config`, and the `bedrock` profile has none set.
-  - Endpoint: `https://bedrock-mantle.{region}.api.aws/anthropic`.
-- **Models:** `anthropic.claude-opus-5-5`, `anthropic.claude-sonnet-5-5`, `anthropic.claude-haiku-5-5`.
-  - All three are listed as available for the `bedrock` profile in us-east-1 and us-west-2.
-  - The use-case agreement isn't on file, but Mantle doesn't need it.
-- **Default model:** Claude Opus 5.5. The model is a setting in `library.toml`. See §6.6 for cost per model; choose after the E0 pilot.
-- **Embeddings for merging duplicate concepts:**
-  - `amazon.titan-embed-text-v2:0`, 1024 dimensions, $0.02 per million tokens, through boto3 `bedrock-runtime`.
-  - Confirm access to it in E0.
+### 6.1 Default: Opus 5.5 through `claude -p`
 
-### 6.2 Verified Bedrock constraints that shape the design
+- **The call** (implemented in `enrich/backends/claude_cli.py`):
+  ```bash
+  claude -p --safe-mode --tools "" --no-session-persistence --output-format json \
+    --model claude-opus-5-5 --effort medium \
+    --system-prompt-file <instructions + source transcript> --json-schema '<schema>'  < task prompt
+  ```
+  - **`--safe-mode`** skips CLAUDE.md, hooks, plugins and MCP servers but keeps your login. `--bare` would require an API key.
+  - **The transcript goes in the system prompt.** Claude Code caches the system prompt, so every window of a lecture reads it from the cache. E0 measured about 11k cache-read tokens per window.
+  - **Output:** `--json-schema` returns a validated object in `structured_output`. It's validated again locally with Pydantic, and every quote is checked against the source (§6.6).
+- **Measured in E0** (30-minute lecture, effort `medium`):
+  - **Time:** 6 minutes, about 12 minutes per lecture hour.
+  - **Output:** 268 questions and 236 concept mentions, all with verified quotes. 82% of the 60 relations passed the check.
+  - **No failed calls.**
+- **Subscription allowance.**
+  - Every call reports your 5-hour and weekly usage. A lecture hour used about **4% of the 5-hour allowance**. The weekly figure didn't move at 1% resolution for half an hour.
+  - When a limit is hit, enrichment stops with the reset time (`UsageLimitError`). A re-run picks up where it stopped.
+- **Run it after each lecture, not all at once.** Four courses at about 12 lecture hours a week fit easily into regular use. A whole semester in one go would hit the limits, and Anthropic's terms say subscription limits assume "ordinary, individual usage".
+- **The model is a setting** (`[enrich] model` in `library.toml`). Sonnet 5.5 is 3× faster but produced about half as many questions.
 
-| Fact | Consequence |
-|---|---|
-| The JSON-schema output mode (`output_config.format`) is documented for the legacy Bedrock integration only, not confirmed on Mantle for the 5.5 models | Get JSON through a **client tool** (`submit_enrichment` with a JSON schema), validate it locally with Pydantic, and retry with the validation error if it fails. E0 tests whether `output_config.format` works on Mantle; use it if so. |
-| Opus 5.5 and Sonnet 5.5 reject forced tool use (`tool_choice` `any` or `tool`) with a 400 | Use `tool_choice: auto`, tell the model in the prompt to call `submit_enrichment`, and treat a reply without the tool call as a retry. |
-| Bedrock batch inference **doesn't support the 5.5 models** and doesn't allow tool use | Use **on-demand** requests with modest parallelism (about 4). The SDK retries 429s. The volume is far below the quotas. |
-| Prompt caching works on Bedrock; cache reads cost 0.05× of input on Opus and Sonnet 5.5 | Cache the instructions plus the whole lecture transcript, then run the passage windows back to back within the 5-minute cache lifetime. |
+### 6.2 Optional: Bedrock backend (verified in E0)
+
+- **Path:** `AnthropicBedrock` (bedrock-runtime) with the `global.anthropic.claude-{opus,sonnet,haiku}-5-5` inference profiles, `aws_profile="bedrock"`, `aws_region="us-east-1"`. The region must be passed explicitly.
+  - The newer Mantle endpoint (`AnthropicBedrockMantle`) serves **only Opus 5.5** on this account. Sonnet and Haiku return 404 there.
+- **Corrections to the earlier research:**
+  - **JSON output works on both paths** for all three 5.5 models, through `output_config.format`.
+  - Forced tool use is still rejected, but it isn't needed.
+- **Batch inference** doesn't support the 5.5 models, so use on-demand requests.
+- **Caching works:** windows after the first read about 11k cached tokens each.
+- **Measured cost per lecture hour:** Haiku $0.10, Sonnet $0.78, Opus about $1.90 (extrapolated from one window).
+- **Titan embeddings** (`amazon.titan-embed-text-v2:0`, 1024 dimensions) work through the same profile. They're used for merging duplicate concepts (§6.4) on either backend.
 
 ### 6.3 Calls per source
 
@@ -210,18 +223,15 @@ merge_log(from_id, into_id, method[exact|alias|llm|user], score, run_id, ts)
   - Re-running skips anything whose input hash is unchanged.
 - **Cost guard.** `studybuddy enrich --dry-run` estimates tokens and dollars. Actual cost is shown per run and per course.
 
-**Rough cost.** These numbers are estimates, to be replaced with E0 measurements.
-- **Per lecture hour:** about 60 passages × about 1,000 output tokens (enrichment JSON plus thinking) is about 60k output tokens, plus about 30k input tokens, mostly cache reads.
-- **Prices:** Bedrock global on-demand prices as of 2026-10-12 (regional endpoints cost 10% more).
-- **Semester assumption:** 4 courses, about 170 lecture hours plus about 3,000 document pages, roughly 220 lecture-hour equivalents.
+**Measured usage (E0, 30-minute transcript).** The semester figures assume 4 courses, about 170 lecture hours plus about 3,000 document pages, roughly 220 lecture-hour equivalents.
 
-| Model | Output price per million tokens | Per lecture hour | Semester |
-|---|---|---|---|
-| Claude Opus 5.5 (default) | $20 | about $1.40 | about $310 |
-| Claude Sonnet 5.5 | $10 | about $0.70 | about $155 |
-| Claude Haiku 5.5 | $0.50 | about $0.04 | about $9 |
+| Model | Output tokens per lecture hour | Time per lecture hour | `claude -p` subscription (default) | Bedrock, per-token |
+|---|---|---|---|---|
+| **Claude Opus 5.5 (chosen)** | about 100k | about 12 min | **about 4% of the 5-hour allowance**; no per-token bill | about $1.90/h, about $420/semester |
+| Claude Sonnet 5.5 | about 43k | about 4 min | allowance change too small to measure | $0.78/h, about $170/semester |
+| Claude Haiku 5.5 | about 300k (mostly reasoning) | about 18 min | about 2% of the 5-hour allowance | $0.10/h, about $22/semester |
 
-Output tokens dominate the cost. Ways to cut it: fewer questions per passage, skip relations for documents, or a cheaper model. The E0 pilot runs one real lecture through each model, so you can compare quality before choosing.
+`claude -p` reports a list-price equivalent ($2.47 per lecture hour for Opus), but on a subscription that's an estimate, not a bill. Ways to use less: fewer questions per passage, effort `low`, or skipping relations for documents.
 
 ### 6.7 Swappable enrichment backends
 
@@ -235,32 +245,14 @@ class EnrichmentBackend(Protocol):
     # BackendResult: parsed JSON, input/output/cache tokens, cost_usd, raw response
 ```
 
-It's chosen with `[enrich] backend = "bedrock"` in `library.toml` or `studybuddy enrich --backend …`, and recorded on every `run`.
+It's chosen with `[enrich] backend = "claude-cli"` in `library.toml` or `studybuddy enrich --backend …`, and recorded on every `run`.
 
 | Backend | How it calls Claude | Use it for |
 |---|---|---|
-| **`bedrock`** (default) | `AnthropicBedrockMantle` as in §6.1–6.2: client tool plus local validation and retry, explicit prompt caching of the shared transcript, exact token counts from `usage` | The semester-scale enrichment. Full control over caching and cost, per-token billing on your AWS account. |
-| **`claude-cli`** | Runs `claude -p` as a subprocess, one call per window | Small runs and trying out prompts |
+| **`claude-cli`** (default) | `claude -p` as in §6.1. Uses your Claude login, caches the system prompt, returns JSON through `--json-schema`, and reports allowance usage | All enrichment |
+| **`bedrock`** | `AnthropicBedrock` as in §6.2. JSON through `output_config.format`, explicit caching, exact token counts, per-token billing on your AWS account | If the subscription allowance runs short, or you want exact per-token costs |
 
-**How the `claude-cli` backend works**
-
-- **The call:**
-  ```bash
-  claude -p --bare --tools "" --no-session-persistence --model <model> \
-    --system-prompt-file prompts/enrich_vN.md --json-schema '<schema>' --output-format json
-  ```
-  The window goes in on stdin.
-- **Output:** the validated object comes back in `structured_output`. Claude Code re-prompts when the output doesn't match the schema, and reports `error_max_structured_output_retries` when it gives up.
-- **Sign-in:**
-  - Bedrock: set `CLAUDE_CODE_USE_BEDROCK=1`, `AWS_PROFILE=bedrock`, `AWS_REGION`, and `ANTHROPIC_MODEL` set to a Bedrock model ID.
-  - Or an `ANTHROPIC_API_KEY`.
-  - `--bare` never reads a subscription login.
-- **Why not a Pro or Max subscription for the semester run:**
-  - Anthropic's terms say subscription limits assume "ordinary, individual usage", and direct programmatic use to API keys.
-  - Session and weekly limits would stall a run of thousands of calls.
-  - It's fine for trying out prompts by hand.
-- **Costs:** `total_cost_usd` is a client-side estimate, and the shared transcript is only cached if calls reuse it within about 5 minutes. Measure per-call tokens in E0 before using this backend for bulk work.
-- **Unverified:** whether `--json-schema` works on Bedrock. Check it in E0.
+Both backends were implemented and tested against the live services in E0, using the same prompts, schemas and quote checking.
 
 ## 7. Exam-time search (no AI)
 
@@ -359,8 +351,8 @@ studybuddy-exam ~/StudyBuddy/fall-2026
 
 | # | Milestone | Done when |
 |---|---|---|
-| **E0** | **Bedrock pilot.** SDK and client set up. Test tool-based JSON and `output_config.format` on Mantle. Confirm cache hits. Run one real lecture through Opus, Sonnet and Haiku 5.5 and measure tokens and cost. Confirm Titan access. | Measured cost per lecture hour per model, sample outputs side by side, model chosen |
-| E1 | **Library and ingestion.** `library init`, `course add`, `add` for MP4 (transcribe + passages + exam copy) and for PPTX/PDF/DOCX (extraction, OCR, Office→PDF conversion, slide/page mapping). Tests use generated sample files. | Every passage has a correct location; PDF page N == slide N even with hidden slides |
+| **E0** ✅ | **Enrichment pilot (done 2026-10-14).** Both backends (`claude -p` and Bedrock) built and tested live. JSON output, caching and Titan confirmed. A real 2-minute clip and a 30-minute transcript run through Opus, Sonnet and Haiku 5.5. | Done: Opus 5.5 through `claude -p` chosen. Measurements and side-by-side samples in [e0-results.md](e0-results.md) |
+| E1 ✅ | **Library and ingestion (done 2026-10-14).** `library init`, `course add/list`, `add` for MP4 (transcribe + passages + exam copy) and for PPTX/PDF/DOCX (extraction, OCR, Office→PDF conversion, slide/page mapping), `status`. Tests use generated sample files; Office tests drive the real PowerPoint and Word. | Done: real-Office tests confirm PDF page N == slide N with a hidden slide, and that every Word passage is on its page. See *E1 notes* below |
 | **E2** | **AI-free exam app (no enrichment yet).** `build-exam` over the original text only; safe query building; ranking; snippets; video jump; PDF.js page jump; guard and offline tests. | Works with Wi-Fi off; the guard tests pass. **Already useful at this point.** |
 | E3 | **Enrichment.** Calls A and B, schema checking, quote checking, versioning, cost guard; questions, aliases and context indexed as extra columns. | A re-run skips unchanged input; unchecked items are never exported |
 | E4 | **Knowledge graph.** Concepts, mentions, relations, duplicate merging (Titan + Claude); concept pages; alias expansion; course map. | Duplicates merged with an undo log; every relation has a checked quote |
@@ -368,16 +360,33 @@ studybuddy-exam ~/StudyBuddy/fall-2026
 | E6 | **Evaluation and rehearsal.** 30–50 practice questions per course (from quizzes), each with its known answer location. Measure recall@5 and @10; tune the ranking weights, the alias cap and the number of questions per passage. A full rehearsal with Wi-Fi off a week before the final. | Recall@5 target agreed and met; exam-day checklist written |
 | E7 | **Optional: cloud backup.** `studybuddy sync push`/`pull` wraps `aws s3 sync` to a private, encrypted, versioned S3 bucket: originals, documents, transcripts, `library.sqlite` snapshots and the exam set. A lifecycle rule moves originals to Glacier Instant Retrieval after 30 days (about $0.80/month for 200 GB). The exam app never uses the cloud. | A restore from S3 onto an empty folder rebuilds a working library |
 
+**E1 notes: what was built differently from the plan**
+
+- **IDs are never reused** (`AUTOINCREMENT`), because enrichment will point at source and passage ids.
+- **Passage origin.** Each passage records where its text came from: `speech`, `text`, `notes` (speaker notes) or `ocr`. On a slide, the text, the speaker notes and the text read from pictures are separate passages, so results can be labelled.
+- **Staging folder.** `add` works in `courses/<slug>/.staging/<file hash>/`. Only when everything succeeded does it move files into place and record the source in one transaction. An interrupted run resumes from what is already there.
+- **Replacing.** A different file with the same name needs `--replace`, and the old source is removed only after the new one is ingested.
+- **View PDF names.** View PDFs are named `<file name>.pdf` (`week04.pptx.pdf`), so slides, a handout and notes that share a stem never collide.
+- **Exam copies.** They use the Mac's hardware H.264 encoder: about 44× real time, roughly 3.5 minutes for 2.5 hours of video. H.264 video already at or below the target bitrate is copied as is, since re-encoding would only make it bigger.
+- **Text extraction beyond the plan:**
+  - **Equations.** PowerPoint text boxes that hold equations are read; python-pptx can't see them.
+  - **Charts.** Labels are read from the chart XML, so 3-D and stock charts work.
+  - **Repeated logos.** OCR text repeated on 3 or more slides is dropped.
+  - **Word.** Tracked insertions, content controls and simple fields are included; deleted text and table-of-contents paragraphs are skipped.
+  - **PDF.** Running headers and footers are removed. Words hyphenated across lines are rejoined (pdfium marks them with U+FFFE or `\x02`).
+- **Transparent images.** OCR flattens them onto white first. Otherwise dark text on a transparent PNG reads as black on black.
+
 E2 deliberately comes before enrichment, so a working AI-free search exists early and every later step can be measured against it.
 
 ## 11. Pitfalls found during research
 
-- **JSON output on Mantle.**
-  - The JSON-schema output mode isn't confirmed on Mantle for the 5.5 models.
-  - Forced `tool_choice` is a 400 on Opus and Sonnet 5.5.
-  - So use a tool with `tool_choice: auto`, validate locally, and retry.
-- **No batch discount** for the 5.5 models, and batch jobs can't use tools.
-- **The region is never read from `~/.aws/config`**, and the `bedrock` profile has no region set.
+- **`claude -p` sign-in and limits.**
+  - `--bare` refuses a subscription login; use `--safe-mode`.
+  - Usage limits stop a run until the reset time, so enrich after each lecture instead of in bulk.
+- **Bedrock (optional backend):**
+  - Mantle serves only Opus 5.5 on this account, so use bedrock-runtime with `global.` inference profiles.
+  - There's no batch discount for the 5.5 models.
+  - The region is never read from `~/.aws/config`, and the `bedrock` profile has no region set.
 - **Python environment.**
   - The pyenv Python can't load SQLite extensions, so spellfix1 is out.
   - It has no `lzma`, so the `wn` package is out.
