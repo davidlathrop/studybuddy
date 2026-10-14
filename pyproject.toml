@@ -11,6 +11,8 @@ requires-python = ">=3.12"
 dependencies = [
     "mlx-audio[stt]>=0.5.8,<0.6",
     "numpy>=1.26.4",
+    "anthropic[bedrock]>=1.14,<2",
+    "rapidfuzz>=3.14,<4",
 ]
 
 [project.optional-dependencies]
@@ -24,6 +26,9 @@ studybuddy = "studybuddy.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"studybuddy.enrich" = ["prompts/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
