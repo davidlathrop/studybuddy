@@ -148,6 +148,124 @@ def extract_mp3(
     return dst
 
 
+@dataclass
+class VideoInfo:
+    width: int | None
+    height: int | None
+    codec: str | None
+    bit_rate: int | None  # bits per second; None when the file does not say
+
+
+def video_info(path: Path) -> VideoInfo | None:
+    """The first video stream's size and codec, or None when ``path`` has no video."""
+    path = Path(path)
+    _check_input(path)
+    cmd = [
+        _tool("ffprobe"), "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=codec_name,width,height,bit_rate:format=bit_rate", "-of", "json", _arg(path),
+    ]
+    log.debug("running %s", shlex.join(cmd))
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if proc.returncode != 0:
+        raise AudioError(f"ffprobe could not read {path}:\n{_tail(proc.stderr)}")
+    data = json.loads(proc.stdout or "{}")
+    streams = data.get("streams") or []
+    if not streams:
+        return None
+    s = streams[0]
+    # Containers often omit the stream's bit rate; the overall rate is a close upper bound.
+    rate = _positive_int(s.get("bit_rate")) or _positive_int((data.get("format") or {}).get("bit_rate"))
+    return VideoInfo(_positive_int(s.get("width")), _positive_int(s.get("height")), s.get("codec_name"), rate)
+
+
+def has_encoder(name: str) -> bool:
+    proc = subprocess.run([_tool("ffmpeg"), "-hide_banner", "-encoders"], capture_output=True, text=True)
+    return any(line.split()[1:2] == [name] for line in proc.stdout.splitlines() if line.strip())
+
+
+def make_exam_copy(
+    src: Path,
+    dst: Path,
+    *,
+    height: int = 540,
+    video_bitrate: str = "500k",
+    audio_bitrate: str = "64k",
+    duration_s: float | None = None,
+    on_progress: ProgressFn | None = None,
+) -> Path:
+    """Write a small, quickly seekable copy of ``src`` for exam day (plan §3) and return ``dst``.
+
+    Scaled down to ``height`` (never up), H.264 + mono AAC, ``+faststart`` so a browser can
+    seek before the whole file loads. Uses the Mac's hardware encoder when ffmpeg has it.
+    H.264 video that is already no larger than the target (screen recordings of slides
+    often are) is copied as is instead of being re-encoded bigger.
+    The audio keeps the container's timeline, like the transcript's MP3, so transcript
+    times line up with the copy. Written to a temporary file that replaces ``dst`` only on
+    success; ``on_progress`` behaves as in :func:`extract_mp3`.
+    """
+    src, dst = Path(src), Path(dst)
+    ffmpeg = _tool("ffmpeg")
+    _check_input(src)
+    info = video_info(src)
+    if info is None:
+        raise AudioError(f"{src} has no video stream to make an exam copy of")
+    tmp = _partial_path(dst)
+    if on_progress is not None and duration_s is None:
+        duration_s = probe(src).duration_s
+    dst.parent.mkdir(parents=True, exist_ok=True)
+
+    if _small_h264(info, height, video_bitrate):
+        video = ["-c:v", "copy"]
+    else:
+        scale = f"scale=-2:'min({height},ih)':flags=bicubic,format=yuv420p"
+        if has_encoder("h264_videotoolbox"):
+            encoder = ["-c:v", "h264_videotoolbox", "-b:v", video_bitrate, "-profile:v", "main"]
+        else:
+            encoder = ["-c:v", "libx264", "-preset", "veryfast", "-b:v", video_bitrate]
+        video = ["-vf", scale, *encoder]
+    cmd = [
+        ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", _arg(src),
+        "-map", "0:v:0", "-map", "0:a:0?", *video,
+        "-af", _KEEP_TIMELINE, "-ac", "1", "-c:a", "aac", "-b:a", audio_bitrate,
+        "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", "-f", "mp4", _arg(tmp),
+    ]
+    progress = _ProgressReporter(duration_s, on_progress)
+    try:
+        returncode, stderr = _run_with_progress(cmd, progress)
+        if returncode != 0:
+            raise AudioError(_failure_message("could not make an exam copy of", src, returncode, stderr))
+        if stderr.strip():
+            log.warning("ffmpeg reported problems while making an exam copy of %s:\n%s", src, _tail(stderr))
+        os.replace(tmp, dst)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    progress.finish()
+    return dst
+
+
+def _small_h264(info: VideoInfo, height: int, video_bitrate: str) -> bool:
+    """True when re-encoding ``info``'s video could only make it bigger."""
+    target = _bits_per_second(video_bitrate)
+    return (
+        info.codec == "h264"
+        and info.bit_rate is not None
+        and target is not None
+        and (info.bit_rate <= target or (info.height or 0) <= height)
+        and info.bit_rate <= 4 * target  # a small frame at a huge rate is still worth shrinking
+    )
+
+
+def _bits_per_second(rate: str) -> int | None:
+    """``"500k"`` -> 500000, ``"2M"`` -> 2000000, ``"800000"`` -> 800000."""
+    rate = rate.strip().lower()
+    scale = {"k": 1_000, "m": 1_000_000}.get(rate[-1:], 1)
+    try:
+        return int(float(rate.rstrip("km")) * scale)
+    except ValueError:
+        return None
+
+
 def load_audio(path: Path, sr: int = SAMPLE_RATE) -> np.ndarray:
     """Decode the first audio stream of ``path`` to float32 mono at ``sr`` Hz, clipped to [-1, 1]."""
     path = Path(path)

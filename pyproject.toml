@@ -13,6 +13,11 @@ dependencies = [
     "numpy>=1.26.4",
     "anthropic[bedrock]>=1.14,<2",
     "rapidfuzz>=3.14,<4",
+    "python-pptx>=1.0.2,<2",
+    "python-docx>=1.2,<2",
+    "pypdfium2>=5.14,<6",
+    "pillow>=10.1",
+    "ocrmac>=1.0.1,<2; sys_platform == 'darwin'",
 ]
 
 [project.optional-dependencies]
@@ -35,4 +40,5 @@ testpaths = ["tests"]
 addopts = "-ra"
 markers = [
     "model: loads a real ASR model (slow; runs only when STUDYBUDDY_MODEL_TESTS=1)",
+    "office: drives PowerPoint/Word to convert files (runs only when STUDYBUDDY_OFFICE_TESTS=1)",
 ]

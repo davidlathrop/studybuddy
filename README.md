@@ -32,6 +32,44 @@ lecture.srt
 The design, the model choice and the measurements behind it are in
 [plans/mp4-transcription-plan.md](plans/mp4-transcription-plan.md).
 
+## Building a semester library
+
+For an open-book exam, studybuddy can collect a whole semester of lecture videos, slides,
+PDFs and Word files into one library, ready to be searched
+([plans/exam-search-plan.md](plans/exam-search-plan.md); the search itself comes in a
+later milestone).
+
+```sh
+studybuddy library init ~/StudyBuddy/fall-2026          # once per semester
+studybuddy course add bio101 --title "Biology 101" --glossary bio-terms.txt
+studybuddy add bio101 ~/Downloads/lecture04.mp4 --week 4 --date 2026-09-15
+studybuddy add bio101 week04.pptx reading.pdf notes.docx
+studybuddy status            # every course
+studybuddy status bio101     # the files of one course
+```
+
+What `add` does with each kind of file:
+
+| File | What is kept in the library | Locations |
+|---|---|---|
+| Video (MP4, MOV, MKV, M4V, WebM) | The transcript (`.json`, `.txt`) and a 540p "exam copy" of the video, about 250 MB per hour, made with the Mac's hardware encoder. The original is not copied; you can move or delete it afterwards. | Start and end time of each ~1-minute passage |
+| PowerPoint (.pptx) | A copy, plus a PDF made with PowerPoint for viewing (hidden slides included, so page N is slide N) | Slide number; slide text, speaker notes and text in pictures (read with Apple's OCR) are separate passages |
+| PDF | A copy | Page number; scanned pages are read with OCR; long pages are split |
+| Word (.docx) | A copy, plus a PDF made with Word | Heading path ("Chapter 2 > 2.1 Glycolysis") and page number |
+
+- The library is found from `--library PATH`, then `$STUDYBUDDY_LIBRARY`, then the folder
+  you are in (or any folder above it), then the library `library init` last created.
+- `library.toml` in the library holds the settings: transcription mode and language,
+  exam-copy size, OCR and PDF conversion on/off, and the enrichment model.
+- Course terms in `courses/<course>/glossary.txt` are used as transcription hotwords.
+- Adding a file that is already in the course does nothing. Adding a different file with
+  the same name needs `--replace`.
+- An interrupted `add` resumes when you run it again: the transcript, exam copy and
+  converted PDF already made are reused.
+- Converting PowerPoint and Word files needs Microsoft PowerPoint and Word. The first time,
+  macOS asks to let the terminal control them. Without them (or with `--no-convert`) the
+  files are still added and searchable, just without a PDF to open.
+
 ## Requirements
 
 - A Mac with Apple silicon (M1 or later). MLX does not run on Intel Macs.
@@ -185,7 +223,8 @@ These checks report what they did as warnings on stderr.
 ```sh
 .venv/bin/pytest                                      # unit tests, about 10 s
 STUDYBUDDY_MODEL_TESTS=1 .venv/bin/pytest -m model -s  # only the real-model tests, about 35 s
-STUDYBUDDY_MODEL_TESTS=1 .venv/bin/pytest              # everything
+STUDYBUDDY_MODEL_TESTS=1 .venv/bin/pytest              # everything except Office
+STUDYBUDDY_OFFICE_TESTS=1 .venv/bin/pytest -m office    # converts files with PowerPoint and Word
 ```
 
 The unit tests replace the speech models with fakes, but run everything else for real. The
@@ -198,12 +237,17 @@ tests need both.
 
 ```
 src/studybuddy/
-  cli.py          # the `studybuddy transcribe` command
-  audio.py        # ffprobe checks, MP3 extraction with progress, decoding to 16 kHz
+  cli.py          # the command line: transcribe, plus the library commands from commands.py
+  commands.py     # library init, course add|list, add, status
+  library.py      # the library folder, library.toml settings, the build database
+  transcription.py # one file -> MP3 + transcript (shared by transcribe and add)
+  audio.py        # ffprobe checks, MP3 extraction, exam copies, decoding to 16 kHz
   transcribe.py   # the Transcriber interface; Qwen3Transcriber and ParakeetTranscriber
   pipeline.py     # sections, saving and resuming, progress, offsets
   output.py       # .txt / .srt / .json writers
   types.py        # Segment, Transcript
+  ingest/         # add: video, pptx, pdf, docx, OCR, Office-to-PDF conversion
+  enrich/         # AI enrichment backends, schemas and prompts (exam-search plan §6)
 tests/            # pytest suite; media.py generates the test audio and video
 plans/            # the implementation plan
 ```

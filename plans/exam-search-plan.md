@@ -1,6 +1,6 @@
 # Exam Search: Implementation Plan
 
-_Status: E0 (enrichment pilot) done 2026-10-14; see [e0-results.md](e0-results.md). E1 onwards not started._
+_Status: E0 (enrichment pilot) and E1 (library and ingestion) done 2026-10-14; see [e0-results.md](e0-results.md). E2 onwards not started._
 _Builds on the transcription pipeline in [mp4-transcription-plan.md](mp4-transcription-plan.md), which is implemented on branch `feature/mp4-transcription`._
 
 ## 1. Goal and hard constraints
@@ -69,12 +69,13 @@ The work splits into two halves that share only data files.
 Adapted from the knowledge-graph research (provenance first: every AI output points to its run and its source passage):
 
 ```
-course(id, slug, title)
-source(id, course_id, kind[video|pptx|pdf|docx], title, week, date, path, view_path,
-       duration_s, page_count, sha256)
+course(id, slug, title, created_at)                          -- E1: built (schema v1)
+source(id, course_id, kind[video|pptx|pdf|docx], title, week, date,
+       original_path, stored_path, view_path,               -- stored: library copy / transcript
+       duration_s, page_count, sha256, extractor, warnings, added_at)
 passage(id, source_id, ord, t_start_ms, t_end_ms,          -- video
         slide_no, page_no, heading_path,                     -- documents
-        text, text_sha)
+        origin[speech|text|notes|ocr], text, text_sha)
 run(id, task, prompt_version, model_id, params_json, schema_ver, input_sha, created_at,
     input_tokens, output_tokens, cache_read_tokens, cost_usd)
 active_run(task, run_id)                                     -- which run feeds the exam index
@@ -351,13 +352,29 @@ studybuddy-exam ~/StudyBuddy/fall-2026
 | # | Milestone | Done when |
 |---|---|---|
 | **E0** ✅ | **Enrichment pilot (done 2026-10-14).** Both backends (`claude -p` and Bedrock) built and tested live. JSON output, caching and Titan confirmed. A real 2-minute clip and a 30-minute transcript run through Opus, Sonnet and Haiku 5.5. | Done: Opus 5.5 through `claude -p` chosen. Measurements and side-by-side samples in [e0-results.md](e0-results.md) |
-| E1 | **Library and ingestion.** `library init`, `course add`, `add` for MP4 (transcribe + passages + exam copy) and for PPTX/PDF/DOCX (extraction, OCR, Office→PDF conversion, slide/page mapping). Tests use generated sample files. | Every passage has a correct location; PDF page N == slide N even with hidden slides |
+| E1 ✅ | **Library and ingestion (done 2026-10-14).** `library init`, `course add/list`, `add` for MP4 (transcribe + passages + exam copy) and for PPTX/PDF/DOCX (extraction, OCR, Office→PDF conversion, slide/page mapping), `status`. Tests use generated sample files; Office tests drive the real PowerPoint and Word. | Done: real-Office tests confirm PDF page N == slide N with a hidden slide, and that every Word passage is on its page. See *E1 notes* below |
 | **E2** | **AI-free exam app (no enrichment yet).** `build-exam` over the original text only; safe query building; ranking; snippets; video jump; PDF.js page jump; guard and offline tests. | Works with Wi-Fi off; the guard tests pass. **Already useful at this point.** |
 | E3 | **Enrichment.** Calls A and B, schema checking, quote checking, versioning, cost guard; questions, aliases and context indexed as extra columns. | A re-run skips unchanged input; unchecked items are never exported |
 | E4 | **Knowledge graph.** Concepts, mentions, relations, duplicate merging (Titan + Claude); concept pages; alias expansion; course map. | Duplicates merged with an undo log; every relation has a checked quote |
 | E5 | **Polish.** Lecture↔slide links, "did you mean", trigram fallback, filters, optional word-level timestamps. | — |
 | E6 | **Evaluation and rehearsal.** 30–50 practice questions per course (from quizzes), each with its known answer location. Measure recall@5 and @10; tune the ranking weights, the alias cap and the number of questions per passage. A full rehearsal with Wi-Fi off a week before the final. | Recall@5 target agreed and met; exam-day checklist written |
 | E7 | **Optional: cloud backup.** `studybuddy sync push`/`pull` wraps `aws s3 sync` to a private, encrypted, versioned S3 bucket: originals, documents, transcripts, `library.sqlite` snapshots and the exam set. A lifecycle rule moves originals to Glacier Instant Retrieval after 30 days (about $0.80/month for 200 GB). The exam app never uses the cloud. | A restore from S3 onto an empty folder rebuilds a working library |
+
+**E1 notes: what was built differently from the plan**
+
+- **IDs are never reused** (`AUTOINCREMENT`), because enrichment will point at source and passage ids.
+- **Passage origin.** Each passage records where its text came from: `speech`, `text`, `notes` (speaker notes) or `ocr`. On a slide, the text, the speaker notes and the text read from pictures are separate passages, so results can be labelled.
+- **Staging folder.** `add` works in `courses/<slug>/.staging/<file hash>/`. Only when everything succeeded does it move files into place and record the source in one transaction. An interrupted run resumes from what is already there.
+- **Replacing.** A different file with the same name needs `--replace`, and the old source is removed only after the new one is ingested.
+- **View PDF names.** View PDFs are named `<file name>.pdf` (`week04.pptx.pdf`), so slides, a handout and notes that share a stem never collide.
+- **Exam copies.** They use the Mac's hardware H.264 encoder: about 44× real time, roughly 3.5 minutes for 2.5 hours of video. H.264 video already at or below the target bitrate is copied as is, since re-encoding would only make it bigger.
+- **Text extraction beyond the plan:**
+  - **Equations.** PowerPoint text boxes that hold equations are read; python-pptx can't see them.
+  - **Charts.** Labels are read from the chart XML, so 3-D and stock charts work.
+  - **Repeated logos.** OCR text repeated on 3 or more slides is dropped.
+  - **Word.** Tracked insertions, content controls and simple fields are included; deleted text and table-of-contents paragraphs are skipped.
+  - **PDF.** Running headers and footers are removed. Words hyphenated across lines are rejoined (pdfium marks them with U+FFFE or `\x02`).
+- **Transparent images.** OCR flattens them onto white first. Otherwise dark text on a transparent PNG reads as black on black.
 
 E2 deliberately comes before enrichment, so a working AI-free search exists early and every later step can be measured against it.
 
