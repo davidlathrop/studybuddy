@@ -12,7 +12,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from studybuddy import audio
+from studybuddy import audio, exam_export
 from studybuddy.ingest.add import AddOptions, AddResult, add_file
 from studybuddy.ingest.convert import Converter
 from studybuddy.ingest.model import IngestError
@@ -79,9 +79,26 @@ def add(args: argparse.Namespace, display: _Display) -> int:
     return 0
 
 
+def build_exam(args: argparse.Namespace, display: _Display) -> int:
+    library = Library.find(args.library)
+    log.info("Building the exam index for %s", library.settings.name or library.root.name)
+    built = exam_export.build_exam(library)
+    print(built.path)
+    log.info(
+        "%s, %s, %s; %.1f MB; SHA-256 %s",
+        _plural(built.courses, "course"), _plural(built.sources, "file"), _plural(built.passages, "passage"),
+        built.size_bytes / 1e6, built.sha256[:16],
+    )
+    if built.without_view:
+        log.warning("%s have no video or PDF to open (text only)", _plural(built.without_view, "file"))
+    log.info("Start the exam app with: studybuddy-exam %s", library.root)
+    return 0
+
+
 def status(args: argparse.Namespace, display: _Display) -> int:
     library = Library.find(args.library)
     print(f"{library.settings.name or library.root.name}  ({library.root})")
+    print(exam_export.exam_index_state(library))
     if args.course:
         _course_status(library, library.course(args.course).id)
         return 0
@@ -190,6 +207,12 @@ def register(commands: argparse._SubParsersAction, common: argparse.ArgumentPars
     a.add_argument("--replace", action="store_true",
                    help="replace a different file of the same name already in the course")
     a.set_defaults(run=add)
+
+    b = commands.add_parser(
+        "build-exam", parents=[common], help="build the exam index from the library (no AI)",
+        description="Export every course, file and passage into exam/exam.sqlite, the index the exam app searches.",
+    )
+    b.set_defaults(run=build_exam)
 
     s = commands.add_parser("status", parents=[common], help="show what is in the library")
     s.add_argument("course", nargs="?", metavar="COURSE", help="list the files of one course")

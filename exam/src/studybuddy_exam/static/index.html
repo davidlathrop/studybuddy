@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>StudyBuddy exam search</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css">
+<script type="module" src="/static/app.js"></script>
+</head>
+<body>
+<div class="app">
+  <div id="guard-alert" class="guard-alert" role="alert" hidden></div>
+
+  <header class="top">
+    <div class="brand">
+      <span class="wordmark">StudyBuddy</span>
+      <span class="brand-sub" id="library-name">Exam search</span>
+    </div>
+
+    <form id="search-form" class="search" role="search" autocomplete="off">
+      <label class="visually-hidden" for="q">Search your courses</label>
+      <svg class="search-icon" viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.75"/><path d="M13 13l4.5 4.5"/></svg>
+      <input id="q" name="q" type="search" placeholder="Search lectures, slides, readings and notes" spellcheck="false" autocapitalize="off" autocorrect="off" enterkeyhint="search">
+      <kbd class="search-key" aria-hidden="true">/</kbd>
+    </form>
+
+    <div class="filters" id="filters">
+      <label class="field">
+        <span class="field-label">Course</span>
+        <select id="f-course"><option value="">All courses</option></select>
+      </label>
+      <div class="kinds" role="group" aria-label="File types (none selected means all)">
+        <button type="button" class="kind-toggle" data-kind="video" aria-pressed="false"><span class="flag" data-kind="video"></span>Videos</button>
+        <button type="button" class="kind-toggle" data-kind="pptx" aria-pressed="false"><span class="flag" data-kind="pptx"></span>Slides</button>
+        <button type="button" class="kind-toggle" data-kind="pdf" aria-pressed="false"><span class="flag" data-kind="pdf"></span>PDFs</button>
+        <button type="button" class="kind-toggle" data-kind="docx" aria-pressed="false"><span class="flag" data-kind="docx"></span>Word</button>
+      </div>
+      <div class="field weeks">
+        <span class="field-label" id="weeks-label">Weeks</span>
+        <select id="f-week-from" aria-label="From week"><option value="">Any</option></select>
+        <span class="field-label">to</span>
+        <select id="f-week-to" aria-label="To week"><option value="">Any</option></select>
+      </div>
+      <button type="button" id="clear-filters" class="text-button" hidden>Clear filters</button>
+    </div>
+  </header>
+
+  <main class="split">
+    <section class="results-pane" id="results-pane" aria-label="Results">
+      <div id="results-summary" class="summary" aria-live="polite"></div>
+      <div id="results" class="results"></div>
+    </section>
+
+    <section class="viewer-pane" aria-label="Viewer">
+      <div class="viewer-head" id="viewer-head" hidden>
+        <span class="flag" id="viewer-flag"></span>
+        <span class="viewer-kind" id="viewer-kind"></span>
+        <span class="viewer-title" id="viewer-title"></span>
+        <span class="viewer-meta" id="viewer-meta"></span>
+      </div>
+
+      <div class="stage" id="stage">
+        <div class="stage-empty" id="stage-empty">
+          <p class="stage-lead">Choose a result to see it here.</p>
+          <p>Videos start at the moment the words were said. Slides and pages open with your words highlighted.</p>
+        </div>
+
+        <div class="video-wrap" id="video-wrap" hidden>
+          <video id="video" controls preload="metadata" playsinline></video>
+          <div class="video-bar">
+            <button type="button" class="tool-button" id="back10" title="Go back 10 seconds">−10 s</button>
+            <button type="button" class="tool-button" id="replay-hit">Play match again</button>
+            <span class="video-range" id="video-range"></span>
+            <span class="video-error" id="video-error" role="alert" hidden></span>
+          </div>
+        </div>
+
+        <iframe id="doc-frame" class="doc-frame" title="Document viewer" hidden></iframe>
+
+        <div class="no-view" id="no-view" hidden>
+          <p class="stage-lead">There is no file to show for this result.</p>
+          <p>Its full text is below.</p>
+        </div>
+      </div>
+
+      <section class="passage" id="passage" hidden aria-label="Full passage">
+        <div class="passage-head">
+          <span class="passage-where" id="passage-where"></span>
+          <span class="passage-nav">
+            <button type="button" class="tool-button" id="p-prev" aria-label="Previous passage">Previous</button>
+            <button type="button" class="tool-button" id="p-next" aria-label="Next passage">Next</button>
+            <button type="button" class="tool-button tool-strong" id="p-go" hidden></button>
+          </span>
+        </div>
+        <div class="passage-text" id="passage-text"></div>
+      </section>
+    </section>
+  </main>
+
+  <footer class="status">
+    <span id="status-line" class="status-line" role="status">Checking the exam server…</span>
+    <span class="keys" aria-hidden="true"><kbd>/</kbd> search <kbd>↑</kbd><kbd>↓</kbd> results <kbd>Enter</kbd> open <kbd>Esc</kbd> back to search</span>
+  </footer>
+</div>
+</body>
+</html>

@@ -35,9 +35,8 @@ The design, the model choice and the measurements behind it are in
 ## Building a semester library
 
 For an open-book exam, studybuddy can collect a whole semester of lecture videos, slides,
-PDFs and Word files into one library, ready to be searched
-([plans/exam-search-plan.md](plans/exam-search-plan.md); the search itself comes in a
-later milestone).
+PDFs and Word files into one library, and then search it during the exam with no AI and no
+network ([plans/exam-search-plan.md](plans/exam-search-plan.md)).
 
 ```sh
 studybuddy library init ~/StudyBuddy/fall-2026          # once per semester
@@ -70,6 +69,36 @@ What `add` does with each kind of file:
   macOS asks to let the terminal control them. Without them (or with `--no-convert`) the
   files are still added and searchable, just without a PDF to open.
 
+## Exam day: searching the library
+
+The search runs as a separate, small program, `studybuddy-exam`, in its own environment.
+Only four packages are installed there (a web server, fuzzy string matching and a phonetic
+code; listed in [exam/requirements.lock](exam/requirements.lock)) and no AI library at all.
+
+```sh
+studybuddy build-exam                         # after adding files: refresh the exam index
+exam/.venv/bin/studybuddy-exam                # opens the search page in Chrome
+exam/.venv/bin/studybuddy-exam ~/StudyBuddy/fall-2026 --port 8765 --no-browser
+```
+
+- **What it does:** search every course at once or filter by course, kind of file and week.
+  Results are ranked so passages containing all your words come first. Misspellings get a
+  "did you mean" suggestion. Partial words still match.
+- **Where results go:** a video result plays the exam copy from that moment. A slide, PDF or
+  Word result opens the bundled PDF viewer at that slide or page with your words
+  highlighted. Results without a PDF show their text.
+- **How "no AI" is enforced and shown:**
+  - The first thing the program does is install a Python audit hook. From then on, importing
+    any AI or machine-learning library (or the studybuddy builder) is refused.
+  - Any network connection or name lookup that isn't to this computer is refused too.
+  - The page's status line shows "No AI · Offline", the index's fingerprint and when it was
+    built.
+  - The page itself may load only files from this computer (Content-Security-Policy), and the
+    server listens on 127.0.0.1 only.
+  - Keep Wi-Fi off as well. Native code making raw system calls could bypass an audit hook.
+- **Rehearse:** before the exam, run it with Wi-Fi off in the browser you will use, and
+  try a few questions from your notes.
+
 ## Requirements
 
 - A Mac with Apple silicon (M1 or later). MLX does not run on Intel Macs.
@@ -82,12 +111,15 @@ What `add` does with each kind of file:
 
 ```sh
 python3 -m venv .venv
-.venv/bin/pip install -e ".[dev]"
+.venv/bin/pip install -e ".[dev]" -e ./exam      # the builder (and the exam index format)
+
+python3 -m venv exam/.venv                       # the exam app, separate and AI-free
+exam/.venv/bin/pip install -r exam/requirements.lock -e "./exam[dev]"
 ```
 
-This installs the `studybuddy` command into `.venv/bin`. Either call `.venv/bin/studybuddy`
-directly or activate the environment first (`source .venv/bin/activate`).
-`python -m studybuddy` works as well.
+This installs the `studybuddy` command into `.venv/bin` and `studybuddy-exam` into
+`exam/.venv/bin`. Either call them by path or activate an environment first
+(`source .venv/bin/activate`). `python -m studybuddy` works as well.
 
 ## Usage
 
@@ -225,6 +257,7 @@ These checks report what they did as warnings on stderr.
 STUDYBUDDY_MODEL_TESTS=1 .venv/bin/pytest -m model -s  # only the real-model tests, about 35 s
 STUDYBUDDY_MODEL_TESTS=1 .venv/bin/pytest              # everything except Office
 STUDYBUDDY_OFFICE_TESTS=1 .venv/bin/pytest -m office    # converts files with PowerPoint and Word
+exam/.venv/bin/pytest exam/tests                       # the exam app, in its own environment
 ```
 
 The unit tests replace the speech models with fakes, but run everything else for real. The
@@ -248,6 +281,17 @@ src/studybuddy/
   types.py        # Segment, Transcript
   ingest/         # add: video, pptx, pdf, docx, OCR, Office-to-PDF conversion
   enrich/         # AI enrichment backends, schemas and prompts (exam-search plan §6)
+  exam_export.py  # build-exam: library -> exam/exam.sqlite
+exam/             # studybuddy-exam: the separate, AI-free exam app
+  src/studybuddy_exam/
+    __main__.py   # installs the guard first, then starts the server on 127.0.0.1
+    guard.py      # the audit hook: no AI imports, loopback-only network
+    index_format.py # exam.sqlite layout, building and opening (FTS5 + trigram + vocabulary)
+    query.py      # safe query building, stopwords
+    search.py     # ranking tiers, filters, snippets, "did you mean"
+    server.py     # Starlette app: page, JSON API, files with Range, CSP
+    static/       # the search page and the bundled PDF.js viewer
+  tests/
 tests/            # pytest suite; media.py generates the test audio and video
 plans/            # the implementation plan
 ```

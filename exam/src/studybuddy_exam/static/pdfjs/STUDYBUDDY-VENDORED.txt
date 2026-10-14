@@ -1,0 +1,24 @@
+Mozilla PDF.js, prebuilt generic viewer, version 6.4.299 (Apache-2.0, see LICENSE).
+
+Source: https://github.com/mozilla/pdf.js/releases/download/v6.4.299/pdfjs-6.4.299-dist.zip
+        (SHA-256 f2245eb7ef3f674c872fe568a177bfec15874f5c034613e55d8e307f93ebd86d)
+Vendored: 2026-10-14, for the offline exam app (served at /pdfjs/ by studybuddy_exam.server).
+
+Unzipped as is, then trimmed. No PDF.js file was edited except web/locale/locale.json.
+- Deleted every *.map source map (build/pdf.mjs.map, build/pdf.sandbox.mjs.map,
+  build/pdf.worker.mjs.map, web/viewer.mjs.map): about 8.7 MB.
+- Deleted the sample document web/compressed.tracemonkey-pldi-09.pdf.
+- Deleted all locales except web/locale/en-US/, and rewrote web/locale/locale.json to
+  {"en-us":"en-US/viewer.ftl"}. Any browser language falls back to en-US (the viewer's
+  GenericL10n tries the browser language, then en-us, and has a built-in en-US fallback).
+- Kept cmaps/, standard_fonts/, iccs/ and wasm/ (CJK text, standard fonts, colour profiles,
+  JPEG 2000 / JBIG2 decoders and the scripting sandbox): PDFs need them offline.
+
+Size after trimming: 7.5 MB in 294 files (21 MB unzipped before trimming).
+
+The exam page opens documents as
+  /pdfjs/web/viewer.html?file=%2Ffiles%2F<source_id>#page=N&search=<words>
+and works under the server's CSP without changes (checked in headless Chrome 155).
+
+To update: download the new pdfjs-<version>-dist.zip, repeat the trimming above, update this
+file and the version in exam/tests/test_static.py, and check the exam page in Chrome.

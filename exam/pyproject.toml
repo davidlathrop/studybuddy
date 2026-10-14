@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "studybuddy-exam"
+version = "0.1.0"
+description = "AI-free, offline search of a StudyBuddy library during an open-book exam."
+requires-python = ">=3.12"
+# Deliberately tiny: a web server, fuzzy string matching and a phonetic code. No AI, no
+# machine learning, no HTTP client. tests/test_dependencies.py keeps it that way.
+dependencies = [
+    "starlette>=1.3,<2",
+    "uvicorn>=0.54,<1",
+    "rapidfuzz>=3.14,<4",
+    "jellyfish>=1.2,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "httpx2",  # Starlette's TestClient
+]
+
+[project.scripts]
+studybuddy-exam = "studybuddy_exam.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+studybuddy_exam = ["static/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

@@ -1,6 +1,6 @@
 # Exam Search: Implementation Plan
 
-_Status: E0 (enrichment pilot) and E1 (library and ingestion) done 2026-10-14; see [e0-results.md](e0-results.md). E2 onwards not started._
+_Status: E0 (enrichment pilot), E1 (library and ingestion) and E2 (AI-free exam app) done 2026-10-14; see [e0-results.md](e0-results.md). E3 onwards not started._
 _Builds on the transcription pipeline in [mp4-transcription-plan.md](mp4-transcription-plan.md), which is implemented on branch `feature/mp4-transcription`._
 
 ## 1. Goal and hard constraints
@@ -353,7 +353,7 @@ studybuddy-exam ~/StudyBuddy/fall-2026
 |---|---|---|
 | **E0** ✅ | **Enrichment pilot (done 2026-10-14).** Both backends (`claude -p` and Bedrock) built and tested live. JSON output, caching and Titan confirmed. A real 2-minute clip and a 30-minute transcript run through Opus, Sonnet and Haiku 5.5. | Done: Opus 5.5 through `claude -p` chosen. Measurements and side-by-side samples in [e0-results.md](e0-results.md) |
 | E1 ✅ | **Library and ingestion (done 2026-10-14).** `library init`, `course add/list`, `add` for MP4 (transcribe + passages + exam copy) and for PPTX/PDF/DOCX (extraction, OCR, Office→PDF conversion, slide/page mapping), `status`. Tests use generated sample files; Office tests drive the real PowerPoint and Word. | Done: real-Office tests confirm PDF page N == slide N with a hidden slide, and that every Word passage is on its page. See *E1 notes* below |
-| **E2** | **AI-free exam app (no enrichment yet).** `build-exam` over the original text only; safe query building; ranking; snippets; video jump; PDF.js page jump; guard and offline tests. | Works with Wi-Fi off; the guard tests pass. **Already useful at this point.** |
+| **E2** ✅ | **AI-free exam app (done 2026-10-14).** `build-exam` over the original text only; safe query building; ranking; snippets; video jump; PDF.js page jump; guard and offline tests. | Done. Tests in a fresh process confirm the guard blocks AI imports and non-loopback network, and the running app reports "AI libraries loaded: none · network: loopback only". Checked in headless Chrome: zero console errors or CSP violations, slide and video jumps land correctly. See *E2 notes* below |
 | E3 | **Enrichment.** Calls A and B, schema checking, quote checking, versioning, cost guard; questions, aliases and context indexed as extra columns. | A re-run skips unchanged input; unchecked items are never exported |
 | E4 | **Knowledge graph.** Concepts, mentions, relations, duplicate merging (Titan + Claude); concept pages; alias expansion; course map. | Duplicates merged with an undo log; every relation has a checked quote |
 | E5 | **Polish.** Lecture↔slide links, "did you mean", trigram fallback, filters, optional word-level timestamps. | — |
@@ -375,6 +375,28 @@ studybuddy-exam ~/StudyBuddy/fall-2026
   - **Word.** Tracked insertions, content controls and simple fields are included; deleted text and table-of-contents paragraphs are skipped.
   - **PDF.** Running headers and footers are removed. Words hyphenated across lines are rejoined (pdfium marks them with U+FFFE or `\x02`).
 - **Transparent images.** OCR flattens them onto white first. Otherwise dark text on a transparent PNG reads as black on black.
+
+**E2 notes: what was built differently from the plan**
+
+- **The exam app owns the index format** (`studybuddy_exam/index_format.py`). `build-exam` passes it rows; the exam app never imports the builder. The builder environment installs the exam package (`pip install -e ./exam`) to write the index.
+- **Three ranking tiers instead of one OR query:**
+  1. passages containing every word;
+  2. then passages containing some of the words;
+  3. then partial-word (trigram) matches, only when the first two find fewer than 5.
+
+  BM25 ranks within each tier. This keeps two-word questions from being led by passages that contain only the rarer word.
+- **"Did you mean".**
+  - It only checks words that match nothing, even after stemming, so "tariff" is never "corrected" when only "tariffs" occurs.
+  - Swapping two letters counts as one edit ("cycel" → "cycle").
+  - When the question finds nothing at all, the corrected question is searched and the page says so.
+- **Questions made only of common words** ("what is it") search nothing. A single common word ("IT") is still searched.
+- **Guard coverage:**
+  - Imports refused: AI and machine-learning libraries, model clients, Apple's Vision OCR, and the studybuddy builder.
+  - Network refused: connections, name lookups, UDP sends and binds that aren't to loopback.
+  - Fetches through `urllib` are refused too.
+- **Lockfile.** `exam/requirements.lock` is generated from a clean environment holding only the four runtime dependencies. A test checks it and the installed environment for AI packages.
+- **PDF.js internal patch.** PDF.js's `#search=` scrolls the first match to the top of the viewer, which can show the next slide or jump to another page. The page wraps PDF.js's internal `findController.scrollMatchIntoView` to return to the hit's page. That internal could change in a future PDF.js release; the bundled version is pinned at 6.4.299.
+- **Later:** the API has no per-source passage list yet. A lecture outline, and a transcript that follows playback, come with chapters in E3/E5.
 
 E2 deliberately comes before enrichment, so a working AI-free search exists early and every later step can be measured against it.
 
