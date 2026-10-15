@@ -13,6 +13,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import logging
+import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -69,6 +70,31 @@ def kind_of(path: Path) -> str:
         raise IngestError(f"{Path(path).name}: {suffix} files are not supported; {_CONVERT_FIRST[suffix]}")
     supported = ", ".join(sorted(KINDS))
     raise IngestError(f"{Path(path).name}: unsupported file type {suffix or '(none)'}; supported: {supported}")
+
+
+_DIGITS = re.compile(r"(\d+)")
+
+
+def natural_key(name: str) -> list[str | int]:
+    """Sort key that orders "Part 2" before "Part 10" (strings and numbers alternate)."""
+    return [int(part) if part.isdigit() else part for part in _DIGITS.split(name.lower())]
+
+
+def files_in(folder: Path, *, recursive: bool = False) -> list[Path]:
+    """The files in ``folder`` that ``add`` takes, in natural order.
+
+    Skips other file types, hidden files and folders (``.DS_Store``, a ``.studybuddy``
+    session library) and Office's ``~$`` lock files.
+    """
+    pattern = "**/*" if recursive else "*"
+    found = [
+        p for p in folder.glob(pattern)
+        if p.is_file()
+        and p.suffix.lower() in KINDS
+        and not any(part.startswith(".") for part in p.relative_to(folder).parts)
+        and not p.name.startswith("~$")
+    ]
+    return sorted(found, key=lambda p: [natural_key(part) for part in p.relative_to(folder).parts])
 
 
 def sha256_file(path: Path, chunk: int = 1 << 20) -> str:

@@ -11,6 +11,7 @@ import pytest
 import doc_samples as ds
 from fakes import Models
 from studybuddy import cli, session, transcribe
+from studybuddy.ingest.add import files_in
 from studybuddy.library import SESSION_DIR, Library, LibraryError
 from studybuddy_exam.index_format import open_index
 from studybuddy_exam.locate import find_library
@@ -48,9 +49,9 @@ def test_natural_order_and_skipped_files(sitting: Path) -> None:
     ds.make_text_pdf(sitting / "sub" / "extra 1.pdf", [["More."]])
     (sitting / ".studybuddy" / "x").mkdir(parents=True)
     ds.make_text_pdf(sitting / ".studybuddy" / "x" / "inside.pdf", [["Hidden."]])
-    names = [p.relative_to(sitting).as_posix() for p in session.session_files(sitting)]
+    names = [p.relative_to(sitting).as_posix() for p in files_in(sitting)]
     assert names == ["handout.pdf", "Part 2.mp4", "Part 10.mp4"]
-    deep = [p.relative_to(sitting).as_posix() for p in session.session_files(sitting, recursive=True)]
+    deep = [p.relative_to(sitting).as_posix() for p in files_in(sitting, recursive=True)]
     assert deep == ["handout.pdf", "Part 2.mp4", "Part 10.mp4", "sub/extra 1.pdf"]
 
 

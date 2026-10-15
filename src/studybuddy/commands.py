@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from studybuddy import audio, exam_export, session
-from studybuddy.ingest.add import KINDS, AddOptions, AddResult, add_file
+from studybuddy.ingest.add import KINDS, AddOptions, AddResult, add_file, files_in, natural_key
 from studybuddy.ingest.convert import Converter
 from studybuddy.ingest.model import IngestError
 from studybuddy.library import Course, Library, LibraryError
@@ -59,13 +59,37 @@ def course_list(args: argparse.Namespace, display: _Display) -> int:
 def add(args: argparse.Namespace, display: _Display) -> int:
     library = Library.find(args.library)
     course = library.course(args.course)
-    if args.title and len(args.files) > 1:
+    paths = expand_folders(args.files, recursive=args.recursive)
+    if not paths:
+        raise LibraryError("no videos or documents to add")
+    if args.title and len(paths) > 1:
         raise LibraryError("--title applies to a single file; add files one at a time to title each")
     options = AddOptions(
         title=args.title, week=args.week, date=args.date, replace=args.replace, mode=args.mode,
         ocr=False if args.no_ocr else None, convert=False if args.no_convert else None,
     )
-    return 1 if _add_files(library, course, args.files, options, display) else 0
+    return 1 if _add_files(library, course, paths, options, display) else 0
+
+
+def expand_folders(paths: list[Path], *, recursive: bool = False) -> list[Path]:
+    """Files as given, folders replaced by the files ``add`` takes from them; no duplicates."""
+    expanded: list[Path] = []
+    for path in paths:
+        path = path.expanduser()
+        if path.is_dir():
+            found = files_in(path, recursive=recursive)
+            if found:
+                log.info("%s: %s", path.name or str(path), _plural(len(found), "file"))
+            else:
+                log.warning("%s has no videos or documents to add%s", path,
+                            "" if recursive else " (use --recursive for subfolders)")
+            expanded.extend(found)
+        else:
+            expanded.append(path)
+    unique: dict[Path, Path] = {}
+    for path in expanded:
+        unique.setdefault(path.resolve(), path)
+    return list(unique.values())
 
 
 def _add_files(library: Library, course: Course, paths: list[Path], options: AddOptions, display: _Display) -> int:
@@ -90,7 +114,7 @@ def session_command(args: argparse.Namespace, display: _Display) -> int:
     folder = args.folder.expanduser().resolve()
     if not folder.is_dir():
         raise LibraryError(f"{folder} is not a folder")
-    files = session.session_files(folder, recursive=args.recursive)
+    files = files_in(folder, recursive=args.recursive)
     if not files:
         kinds = ", ".join(sorted({k.lstrip(".") for k in KINDS}))
         raise LibraryError(f"no videos or documents in {folder} (looked for: {kinds})")
@@ -177,9 +201,10 @@ def _course_status(library: Library, course_id: int) -> None:
             """SELECT s.id, s.kind, s.title, s.duration_s, s.page_count, s.view_path, s.warnings,
                       COUNT(p.id) AS passages
                  FROM source s LEFT JOIN passage p ON p.source_id = s.id
-                WHERE s.course_id = ? GROUP BY s.id ORDER BY s.kind, s.title""",
+                WHERE s.course_id = ? GROUP BY s.id""",
             (course_id,),
         ).fetchall()
+    rows = sorted(rows, key=lambda r: (r["kind"], natural_key(r["title"])))
     if not rows:
         print("No files yet: studybuddy add COURSE FILE...")
         return
@@ -235,13 +260,16 @@ def register(commands: argparse._SubParsersAction, common: argparse.ArgumentPars
         "add", parents=[common], help="add lecture videos and documents to a course",
         description=(
             "Add videos (MP4, MOV, MKV, M4V, WebM), PowerPoint (.pptx), PDF and Word (.docx) files to a "
-            "course. Videos are transcribed and get a small exam copy; documents are copied, their text "
+            "course. A folder adds every such file in it, in natural order (Part 2 before Part 10). "
+            "Videos are transcribed and get a small exam copy; documents are copied, their text "
             "extracted with slide/page numbers, and PowerPoint/Word files converted to PDF for viewing. "
             "Re-running after an interruption resumes; files already added are skipped."
         ),
     )
     a.add_argument("course", metavar="COURSE", help="course slug, e.g. bio101")
-    a.add_argument("files", type=Path, nargs="+", metavar="FILE")
+    a.add_argument("files", type=Path, nargs="+", metavar="FILE_OR_FOLDER",
+                   help="files, or folders whose videos and documents are all added (in natural order)")
+    a.add_argument("--recursive", action="store_true", help="for folders: also add files in their subfolders")
     a.add_argument("--title", help="title for the file (default: its file name); single file only")
     a.add_argument("--week", type=int, metavar="N", help="week of the semester")
     a.add_argument("--date", metavar="YYYY-MM-DD", help="lecture or handout date")

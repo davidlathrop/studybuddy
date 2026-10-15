@@ -14,29 +14,9 @@ import sys
 import unicodedata
 from pathlib import Path
 
-from studybuddy.ingest.add import KINDS
 from studybuddy.library import SESSION_DIR, Course, Library, LibraryError
 
-_DIGITS = re.compile(r"(\d+)")
 _SLUG_JUNK = re.compile(r"[^a-z0-9_-]+")
-
-
-def natural_key(name: str) -> list[str | int]:
-    """Sort key that orders "Part 2" before "Part 10" (strings and numbers alternate)."""
-    return [int(part) if part.isdigit() else part for part in _DIGITS.split(name.lower())]
-
-
-def session_files(folder: Path, *, recursive: bool = False) -> list[Path]:
-    """Supported files in ``folder``, in natural order, skipping hidden and Office temp files."""
-    pattern = "**/*" if recursive else "*"
-    found = [
-        p for p in folder.glob(pattern)
-        if p.is_file()
-        and p.suffix.lower() in KINDS
-        and not any(part.startswith(".") for part in p.relative_to(folder).parts)  # .studybuddy, .DS_Store
-        and not p.name.startswith("~$")  # Office's lock files
-    ]
-    return sorted(found, key=lambda p: [natural_key(part) for part in p.relative_to(folder).parts])
 
 
 def slug_for(name: str) -> str:
