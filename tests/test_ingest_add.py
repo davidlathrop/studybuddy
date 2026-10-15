@@ -353,3 +353,62 @@ def test_no_library(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pyt
     monkeypatch.chdir(tmp_path)
     assert cli_run("status") == 1
     assert "no library found" in capsys.readouterr().err
+
+
+def test_add_a_folder(tmp_path: Path, lecture: Path, models: Models, fake_extractors: dict,
+                      monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    monkeypatch.setattr("studybuddy.commands.Converter", FakeConverter)
+    cli_run("library", "init", tmp_path / "fall")
+    cli_run("course", "add", "bio101", "--title", "Biology")
+    folder = tmp_path / "Workshop"
+    (folder / "extra").mkdir(parents=True)
+    shutil.copy(lecture, folder / "Part 10.mp4")
+    doc(tmp_path, "Part 2.pdf").rename(folder / "Part 2.pdf")
+    doc(tmp_path, "slides.pptx").rename(folder / "extra" / "slides.pptx")
+    for junk in (".DS_Store", "~$notes.docx", "readme.txt"):
+        (folder / junk).write_bytes(b"")
+    capsys.readouterr()
+
+    assert cli_run("add", "bio101", folder, "--week", "5") == 0
+    added = [line for line in capsys.readouterr().out.splitlines() if line.startswith("added")]
+    assert [line.split()[2:4] for line in added] == [["Part", "2"], ["Part", "10"]]  # natural order, junk skipped
+
+    assert cli_run("add", "bio101", folder, "--recursive") == 0
+    out = capsys.readouterr().out
+    assert out.count("skipped") == 2 and "added    pptx  slides" in out
+    weeks = {r["title"]: r["week"] for r in rows(Library.find(tmp_path / "fall"), "SELECT title, week FROM source")}
+    assert weeks == {"Part 2": 5, "Part 10": 5, "slides": None}
+
+
+def test_add_folder_and_file_together_without_duplicates(tmp_path: Path, fake_extractors: dict,
+                                                         monkeypatch: pytest.MonkeyPatch,
+                                                         capsys: pytest.CaptureFixture) -> None:
+    monkeypatch.setattr("studybuddy.commands.Converter", FakeConverter)
+    cli_run("library", "init", tmp_path / "fall")
+    cli_run("course", "add", "bio101", "--title", "Biology")
+    folder = tmp_path / "Week 5"
+    folder.mkdir()
+    a = doc(tmp_path, "a.pdf").rename(folder / "a.pdf")
+    capsys.readouterr()
+    assert cli_run("add", "bio101", folder, a, doc(tmp_path, "b.pdf")) == 0
+    out = capsys.readouterr().out
+    assert out.count("added") == 2
+
+
+def test_add_folder_errors(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    cli_run("library", "init", tmp_path / "fall")
+    cli_run("course", "add", "bio101", "--title", "Biology")
+    empty = tmp_path / "empty"
+    (empty / "sub").mkdir(parents=True)
+    (empty / "sub" / "x.pdf").write_bytes(b"%PDF")
+    capsys.readouterr()
+    assert cli_run("add", "bio101", empty) == 1
+    err = capsys.readouterr().err
+    assert "has no videos or documents to add (use --recursive for subfolders)" in err
+    assert "no videos or documents to add" in err
+    two = tmp_path / "two"
+    two.mkdir()
+    (two / "a.pdf").write_bytes(b"%PDF")
+    (two / "b.pdf").write_bytes(b"%PDF")
+    assert cli_run("add", "bio101", two, "--title", "Handouts") == 1
+    assert "--title applies to a single file" in capsys.readouterr().err

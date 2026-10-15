@@ -2,7 +2,9 @@
 
 ``LIBRARY`` argument, then ``$STUDYBUDDY_LIBRARY``, then the nearest folder above the
 current one holding a ``library.toml``, then the default recorded by
-``studybuddy library init`` (``~/.config/studybuddy/default-library``).
+``studybuddy library init`` (``~/.config/studybuddy/default-library``). A folder made with
+``studybuddy session`` keeps its library in a ``.studybuddy`` subfolder; naming the folder
+itself is enough.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from pathlib import Path
 from studybuddy_exam.index_format import FILE_NAME
 
 CONFIG_FILE = "library.toml"
+SESSION_DIR = ".studybuddy"
 
 
 class LibraryNotFound(Exception):
@@ -28,6 +31,8 @@ def find_library(explicit: Path | None = None, *, cwd: Path | None = None) -> Pa
     for folder in (here, *here.parents):
         if (folder / CONFIG_FILE).is_file():
             return folder
+        if (folder / SESSION_DIR / CONFIG_FILE).is_file():
+            return folder / SESSION_DIR
     config_dir = Path(os.environ.get("STUDYBUDDY_CONFIG_DIR") or Path.home() / ".config" / "studybuddy")
     pointer = config_dir / "default-library"
     if pointer.is_file() and (recorded := pointer.read_text(encoding="utf-8").strip()):
@@ -39,6 +44,8 @@ def find_library(explicit: Path | None = None, *, cwd: Path | None = None) -> Pa
 
 def _check(root: Path) -> Path:
     root = root.resolve()
+    if not (root / CONFIG_FILE).is_file() and (root / SESSION_DIR / CONFIG_FILE).is_file():
+        root = root / SESSION_DIR
     if not (root / CONFIG_FILE).is_file():
         raise LibraryNotFound(f"{root} is not a StudyBuddy library (no {CONFIG_FILE})")
     return root

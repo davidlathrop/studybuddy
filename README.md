@@ -32,6 +32,34 @@ lecture.srt
 The design, the model choice and the measurements behind it are in
 [plans/mp4-transcription-plan.md](plans/mp4-transcription-plan.md).
 
+## One sitting: a folder of videos
+
+When the material for one sitting (a workshop day, a recorded session split into several
+files) is in one folder, a single command processes it and opens the search page:
+
+```sh
+studybuddy session ~/Videos/econ-workshop-oct-15
+```
+
+- **Everything in the folder.** It adds every video in the folder, plus any PowerPoint, PDF
+  and Word files, in natural order ("Part 2" before "Part 10"). Hidden files, Office lock
+  files and other file types are skipped. `--recursive` includes subfolders.
+- **Self-contained.** It keeps the transcripts, exam copies and search index in a
+  `.studybuddy` folder inside that folder, which you can copy to another Mac with the
+  videos. It doesn't touch your semester library or change your default library.
+- **Re-runnable.** Run it again after adding files and only the new ones are processed.
+- **Or into a course.** To put a sitting into a course of your semester library instead,
+  add the folder there: `studybuddy add bio101 ~/Videos/econ-workshop-oct-15`.
+- **Then the search page.** It builds the exam index and opens the search page. Reopen
+  the search later with `exam/.venv/bin/studybuddy-exam ~/Videos/econ-workshop-oct-15`.
+- **Options:**
+  - `--title` names the sitting.
+  - `--mode fast` transcribes about 3× faster.
+  - `--no-search` only processes the files.
+  - `--port` picks the search page's port.
+- **Time:** about 3–4 minutes per hour of video in accurate mode, plus a few seconds per
+  document.
+
 ## Building a semester library
 
 For an open-book exam, studybuddy can collect a whole semester of lecture videos, slides,
@@ -43,6 +71,7 @@ studybuddy library init ~/StudyBuddy/fall-2026          # once per semester
 studybuddy course add bio101 --title "Biology 101" --glossary bio-terms.txt
 studybuddy add bio101 ~/Downloads/lecture04.mp4 --week 4 --date 2026-09-15
 studybuddy add bio101 week04.pptx reading.pdf notes.docx
+studybuddy add bio101 ~/Videos/bio-workshop-oct-15 --week 6   # a whole folder
 studybuddy status            # every course
 studybuddy status bio101     # the files of one course
 ```
@@ -56,6 +85,9 @@ What `add` does with each kind of file:
 | PDF | A copy | Page number; scanned pages are read with OCR; long pages are split |
 | Word (.docx) | A copy, plus a PDF made with Word | Heading path ("Chapter 2 > 2.1 Glycolysis") and page number |
 
+- A folder adds every video, PowerPoint, PDF and Word file in it, in natural order ("Part 2"
+  before "Part 10"), skipping hidden files, Office lock files and other file types.
+  `--recursive` includes subfolders. `--week` and `--date` apply to every file added.
 - The library is found from `--library PATH`, then `$STUDYBUDDY_LIBRARY`, then the folder
   you are in (or any folder above it), then the library `library init` last created.
 - `library.toml` in the library holds the settings: transcription mode and language,
