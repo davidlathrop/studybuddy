@@ -32,6 +32,32 @@ lecture.srt
 The design, the model choice and the measurements behind it are in
 [plans/mp4-transcription-plan.md](plans/mp4-transcription-plan.md).
 
+## One sitting: a folder of videos
+
+When the material for one sitting (a workshop day, a recorded session split into several
+files) is in one folder, a single command processes it and opens the search page:
+
+```sh
+studybuddy session ~/Videos/econ-workshop-oct-15
+```
+
+- **Everything in the folder.** It adds every video in the folder, plus any PowerPoint, PDF
+  and Word files, in natural order ("Part 2" before "Part 10"). Hidden files, Office lock
+  files and other file types are skipped. `--recursive` includes subfolders.
+- **Self-contained.** It keeps the transcripts, exam copies and search index in a
+  `.studybuddy` folder inside that folder, which you can copy to another Mac with the
+  videos. It doesn't touch your semester library or change your default library.
+- **Re-runnable.** Run it again after adding files and only the new ones are processed.
+- **Then the search page.** It builds the exam index and opens the search page. Reopen
+  the search later with `exam/.venv/bin/studybuddy-exam ~/Videos/econ-workshop-oct-15`.
+- **Options:**
+  - `--title` names the sitting.
+  - `--mode fast` transcribes about 3× faster.
+  - `--no-search` only processes the files.
+  - `--port` picks the search page's port.
+- **Time:** about 3–4 minutes per hour of video in accurate mode, plus a few seconds per
+  document.
+
 ## Building a semester library
 
 For an open-book exam, studybuddy can collect a whole semester of lecture videos, slides,

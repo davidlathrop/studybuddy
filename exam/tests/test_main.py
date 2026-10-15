@@ -79,3 +79,17 @@ def test_find_library_order(library: Path, tmp_path: Path, monkeypatch: pytest.M
         find_library(tmp_path)
     assert index_path(library) == library / "exam" / "exam.sqlite"
     assert os.environ.get("STUDYBUDDY_LIBRARY") is None
+
+
+def test_a_session_folder_is_found_from_the_folder_itself(library: Path, tmp_path: Path,
+                                                          monkeypatch: pytest.MonkeyPatch) -> None:
+    import shutil
+
+    monkeypatch.delenv("STUDYBUDDY_LIBRARY", raising=False)
+    sitting = tmp_path / "Workshop"
+    shutil.copytree(library, sitting / ".studybuddy")
+    expected = (sitting / ".studybuddy").resolve()
+    assert find_library(sitting) == expected
+    assert find_library(cwd=sitting) == expected
+    monkeypatch.setenv("STUDYBUDDY_LIBRARY", str(sitting))
+    assert find_library() == expected

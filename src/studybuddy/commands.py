@@ -8,15 +8,18 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
+import shlex
+import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from studybuddy import audio, exam_export
-from studybuddy.ingest.add import AddOptions, AddResult, add_file
+from studybuddy import audio, exam_export, session
+from studybuddy.ingest.add import KINDS, AddOptions, AddResult, add_file
 from studybuddy.ingest.convert import Converter
 from studybuddy.ingest.model import IngestError
-from studybuddy.library import Library, LibraryError
+from studybuddy.library import Course, Library, LibraryError
 from studybuddy.transcription import format_clock
 
 if TYPE_CHECKING:
@@ -62,9 +65,14 @@ def add(args: argparse.Namespace, display: _Display) -> int:
         title=args.title, week=args.week, date=args.date, replace=args.replace, mode=args.mode,
         ocr=False if args.no_ocr else None, convert=False if args.no_convert else None,
     )
+    return 1 if _add_files(library, course, args.files, options, display) else 0
+
+
+def _add_files(library: Library, course: Course, paths: list[Path], options: AddOptions, display: _Display) -> int:
+    """Add each file, reporting one line per file; return how many could not be added."""
     failed = 0
     with Converter() as converter:
-        for path in args.files:
+        for path in paths:
             log.info("Adding %s", path.name)
             try:
                 result = add_file(library, course, path, options, converter=converter, progress=display)
@@ -74,9 +82,45 @@ def add(args: argparse.Namespace, display: _Display) -> int:
                 continue
             print(_describe(result), flush=True)
     if failed:
-        log.error("%d of %d file%s could not be added", failed, len(args.files), "" if len(args.files) == 1 else "s")
+        log.error("%d of %d file%s could not be added", failed, len(paths), "" if len(paths) == 1 else "s")
+    return failed
+
+
+def session_command(args: argparse.Namespace, display: _Display) -> int:
+    folder = args.folder.expanduser().resolve()
+    if not folder.is_dir():
+        raise LibraryError(f"{folder} is not a folder")
+    files = session.session_files(folder, recursive=args.recursive)
+    if not files:
+        kinds = ", ".join(sorted({k.lstrip(".") for k in KINDS}))
+        raise LibraryError(f"no videos or documents in {folder} (looked for: {kinds})")
+    library, course = session.open_session(folder, title=args.title)
+    log.info("Session %r: %s in %s", course.title, _plural(len(files), "file"), folder)
+    options = AddOptions(mode=args.mode, ocr=False if args.no_ocr else None,
+                         convert=False if args.no_convert else None)
+    failed = _add_files(library, course, files, options, display)
+
+    built = exam_export.build_exam(library)
+    log.info("Exam index: %s, %s", _plural(built.sources, "file"), _plural(built.passages, "passage"))
+    if not built.passages:
+        log.error("nothing searchable was found")
         return 1
-    return 0
+    reopen = f"studybuddy-exam {shlex.quote(str(folder))}"
+    if args.no_search:
+        log.info("Search it with: %s", reopen)
+        return 1 if failed else 0
+    app = session.exam_app()
+    if app is None:
+        log.warning("the exam app is not installed (see the README); then search with: %s", reopen)
+        return 1 if failed else 0
+    log.info("Opening the search page (Ctrl-C to stop). Later, reopen it with: %s", reopen)
+    display.close()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    # Replace this process, which has the AI libraries loaded, with the AI-free exam app.
+    command = [str(app), str(folder)] + (["--port", str(args.port)] if args.port else [])
+    os.execv(command[0], command)
+    return 0  # not reached
 
 
 def build_exam(args: argparse.Namespace, display: _Display) -> int:
@@ -213,6 +257,25 @@ def register(commands: argparse._SubParsersAction, common: argparse.ArgumentPars
         description="Export every course, file and passage into exam/exam.sqlite, the index the exam app searches.",
     )
     b.set_defaults(run=build_exam)
+
+    ses = commands.add_parser(
+        "session", parents=[common], help="search one sitting: a folder of videos (and slides/notes)",
+        description=(
+            "Treat FOLDER as one sitting: add every video, PowerPoint, PDF and Word file in it to a "
+            "library kept in FOLDER/.studybuddy, build its exam index and open the search page. Run it "
+            "again after adding files: only new files are processed. Reopen the search later with "
+            "`studybuddy-exam FOLDER`."
+        ),
+    )
+    ses.add_argument("folder", type=Path, metavar="FOLDER")
+    ses.add_argument("--title", help="name for this sitting (default: the folder name)")
+    ses.add_argument("--mode", choices=("accurate", "fast"), help="transcription mode (default: accurate)")
+    ses.add_argument("--recursive", action="store_true", help="also add files in subfolders")
+    ses.add_argument("--no-ocr", action="store_true", help="skip reading text in images and scanned pages")
+    ses.add_argument("--no-convert", action="store_true", help="skip converting PowerPoint/Word to PDF")
+    ses.add_argument("--no-search", action="store_true", help="only process the files; do not open the search page")
+    ses.add_argument("--port", type=int, help="port for the search page (default 8765)")
+    ses.set_defaults(run=session_command)
 
     s = commands.add_parser("status", parents=[common], help="show what is in the library")
     s.add_argument("course", nargs="?", metavar="COURSE", help="list the files of one course")

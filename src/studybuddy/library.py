@@ -9,7 +9,8 @@
 
 A command finds its library from ``--library``, then ``$STUDYBUDDY_LIBRARY``, then the nearest
 folder above the current directory holding a ``library.toml``, then the default recorded by
-``studybuddy library init``.
+``studybuddy library init``. A folder made with ``studybuddy session`` keeps its library in a
+``.studybuddy`` subfolder; naming the folder itself is enough.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 CONFIG_FILE = "library.toml"
+SESSION_DIR = ".studybuddy"  # a one-sitting library inside the folder of its videos
 DB_PATH = Path("build") / "library.sqlite"
 SLUG = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 
@@ -215,13 +217,15 @@ class Library:
     @classmethod
     def find(cls, explicit: Path | None = None, *, cwd: Path | None = None) -> Library:
         if explicit is not None:
-            return cls(explicit)
+            return cls(library_root(Path(explicit)))
         if env := os.environ.get("STUDYBUDDY_LIBRARY"):
-            return cls(Path(env))
+            return cls(library_root(Path(env)))
         here = Path(cwd or Path.cwd()).resolve()
         for folder in (here, *here.parents):
             if (folder / CONFIG_FILE).is_file():
                 return cls(folder)
+            if (folder / SESSION_DIR / CONFIG_FILE).is_file():
+                return cls(folder / SESSION_DIR)
         pointer = _default_pointer()
         if pointer.is_file() and (recorded := pointer.read_text(encoding="utf-8").strip()):
             return cls(Path(recorded))
@@ -308,6 +312,14 @@ class Library:
 
     def absolute(self, relative: str) -> Path:
         return self.root / relative
+
+
+def library_root(path: Path) -> Path:
+    """``path`` itself, or its ``.studybuddy`` subfolder when that is where the library is."""
+    path = Path(path).expanduser()
+    if not (path / CONFIG_FILE).is_file() and (path / SESSION_DIR / CONFIG_FILE).is_file():
+        return path / SESSION_DIR
+    return path
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
