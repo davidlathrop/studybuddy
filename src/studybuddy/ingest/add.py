@@ -163,15 +163,20 @@ def add_file(
 
 
 def remove_source(library: Library, source_id: int) -> None:
-    """Delete a source, its passages and its files in the library."""
+    """Delete a source, its passages and study notes, and its files in the library."""
     with library.db() as db:
-        row = db.execute("SELECT kind, stored_path, view_path FROM source WHERE id = ?", (source_id,)).fetchone()
+        row = db.execute(
+            """SELECT s.kind, s.stored_path, s.view_path, c.slug FROM source s JOIN course c ON c.id = s.course_id
+                WHERE s.id = ?""",
+            (source_id,),
+        ).fetchone()
         if row is None:
             return
         db.execute("DELETE FROM source WHERE id = ?", (source_id,))
     paths = {row["stored_path"], row["view_path"]} - {None}
     if row["kind"] == "video" and row["stored_path"]:
         paths.add(str(Path(row["stored_path"]).with_suffix(".txt")))
+        library.notes_file(row["slug"], row["stored_path"]).unlink(missing_ok=True)
     for relative in paths:
         library.absolute(relative).unlink(missing_ok=True)
 

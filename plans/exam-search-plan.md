@@ -1,6 +1,6 @@
 # Exam Search: Implementation Plan
 
-_Status: E0 (enrichment pilot), E1 (library and ingestion) and E2 (AI-free exam app) done 2026-10-14; see [e0-results.md](e0-results.md). E3 onwards not started._
+_Status: E0 (enrichment pilot), E1 (library and ingestion) and E2 (AI-free exam app) done 2026-10-14; see [e0-results.md](e0-results.md). Study notes (§6.8), built on the E0 backends, added 2026-10-22. E3 onwards not started._
 _Builds on the transcription pipeline in [mp4-transcription-plan.md](mp4-transcription-plan.md), which is implemented on branch `feature/mp4-transcription`._
 
 ## 1. Goal and hard constraints
@@ -77,7 +77,8 @@ passage(id, source_id, ord, t_start_ms, t_end_ms,          -- video
         slide_no, page_no, heading_path,                     -- documents
         origin[speech|text|notes|ocr], text, text_sha)
 run(id, task, prompt_version, model_id, params_json, schema_ver, input_sha, created_at,
-    input_tokens, output_tokens, cache_read_tokens, cost_usd)
+    input_tokens, output_tokens, cache_write_tokens, cache_read_tokens, cost_usd)  -- built (schema v2)
+notes(source_id, run_id, data)                               -- §6.8: built (schema v2)
 active_run(task, run_id)                                     -- which run feeds the exam index
 enrichment(id, passage_id, run_id, field[question|keyword|context|summary],
            value, quote, q_start, q_end, verified)
@@ -253,6 +254,31 @@ It's chosen with `[enrich] backend = "claude-cli"` in `library.toml` or `studybu
 | **`bedrock`** | `AnthropicBedrock` as in §6.2. JSON through `output_config.format`, explicit caching, exact token counts, per-token billing on your AWS account | If the subscription allowance runs short, or you want exact per-token costs |
 
 Both backends were implemented and tested against the live services in E0, using the same prompts, schemas and quote checking.
+
+### 6.8 Study notes (built 2026-10-22)
+
+Study notes for each lecture video, for learning and revising before the exam (and as
+open-notes material). This step is separate from the search enrichment above.
+
+- **Calls** (`enrich/notes.py`, prompts `notes_{system,outline,sections}_v1.md`). Every call shares the cached prefix of §6.1.
+  - An outline: title, overview, consecutive sections, and announcements (logistics only).
+  - One call per group of sections, about 20 passages each. Each section gets a summary, key points with details, key terms with a verbatim quote, examples, what was stressed, and review questions with answers.
+- **Checks** (deterministic):
+  - Sections are made to cover every passage in order.
+  - A group that skips a section is asked once more for the missing ones.
+  - A key term's quote is kept only if `check_quote` finds it in that section's passages, or in the passages on either side.
+  - Times are looked up from passage ids; the model never writes them.
+- **Storage** (`study_notes.py`). Each set of notes is a `run` row (task `notes`), plus the checked notes as JSON in `notes`.
+  - A video is redone only when its `input_sha` (the transcript as sent) or the prompt version changes, or with `--redo`.
+  - Markdown is written to `courses/<slug>/notes/<video>.notes.md`, plus `index.md`: lectures, announcements and an A–Z glossary. A session writes to `FOLDER/Study notes/`.
+- **When.**
+  - After `transcribe`, next to the transcript (which is then also kept as `.json`, so that `studybuddy notes FILE.json` can redo the notes).
+  - After `add`, for the videos it adds.
+  - After `session`, for the whole sitting.
+  - With `studybuddy notes [COURSE...] [--redo]`.
+  - Turned off with `--no-notes` or `[notes] auto = false`.
+- **Measured.** On the synthetic 10-minute transcript, Opus 5.5 through `claude -p` took 75 s for 2 calls, and every key-term quote verified.
+- **Not exported to `exam.sqlite`.** If the notes should become searchable on exam day, they need the C5 labelling, like other AI text.
 
 ## 7. Exam-time search (no AI)
 

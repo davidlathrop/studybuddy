@@ -1,9 +1,11 @@
 """`studybuddy transcribe ...` command line (plan §4.2).
 
     studybuddy transcribe lecture.mp4 [--mode accurate|fast] [--language English]
-        [--formats txt,srt,json] [--hotwords-file terms.txt] [--out-dir DIR]
+        [--formats txt,srt,json] [--hotwords-file terms.txt] [--out-dir DIR] [--no-notes]
 
-Writes ``lecture.mp3`` and the transcript files next to the input (or into ``--out-dir``).
+Writes ``lecture.mp3`` and the transcript files next to the input (or into ``--out-dir``),
+then has Claude write study notes from the transcript to ``lecture.notes.md`` (and keeps
+``lecture.json``, which the notes are made from), unless ``--no-notes``.
 While a run is in progress, finished sections are kept in ``lecture.partial.jsonl``; running
 the same command again after an interruption skips them. Progress and messages go to
 stderr, and the paths of the files written go to stdout.
@@ -23,7 +25,8 @@ from pathlib import Path
 from types import TracebackType
 from typing import NoReturn, TextIO
 
-from studybuddy import __version__, audio, commands, output, transcribe
+from studybuddy import __version__, audio, commands, output, study_notes, transcribe
+from studybuddy.enrich.backends import EnrichmentError
 from studybuddy.ingest.model import IngestError
 from studybuddy.library import LibraryError
 from studybuddy.transcription import MODEL_NAMES, transcribe_media
@@ -72,8 +75,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="extract a video's audio as MP3 and transcribe it",
         description=(
             "Extract the first audio track of INPUT to <name>.mp3 and transcribe it to "
-            "<name>.txt (and optionally .srt / .json). Re-running an interrupted command "
-            "resumes it."
+            "<name>.txt (and optionally .srt / .json), then have Claude write study notes "
+            "from the transcript to <name>.notes.md (also keeping <name>.json) unless "
+            "--no-notes. Re-running an interrupted command resumes it."
         ),
     )
     cmd.add_argument("input", type=Path, metavar="INPUT", help="video or audio file (MP4, MOV, MKV, M4A, MP3, ...)")
@@ -98,6 +102,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cmd.add_argument(
         "--out-dir", type=Path, metavar="D", help="where to write the outputs (default: next to INPUT)"
+    )
+    cmd.add_argument(
+        "--no-notes", action="store_true",
+        help="do not write study notes (<name>.notes.md, written by Claude from the transcript); "
+        "nothing then leaves this Mac",
     )
     _add_chatter(cmd)
     cmd.set_defaults(run=_transcribe_command)
@@ -142,12 +151,22 @@ def _transcribe_command(args: argparse.Namespace, display: _Display) -> int:
     src: Path = args.input.expanduser()
     hotwords = read_hotwords(args.hotwords_file.expanduser()) if args.hotwords_file else []
     out_dir = args.out_dir.expanduser() if args.out_dir else src.parent
+    # Notes are written from the .json, so a failed or interrupted notes step can be redone
+    # with `studybuddy notes <name>.json` instead of transcribing again.
+    notes = not args.no_notes
+    formats = args.formats + (["json"] if notes and "json" not in args.formats else [])
     result = transcribe_media(
-        src, out_dir, mode=args.mode, formats=args.formats, language=args.language,
+        src, out_dir, mode=args.mode, formats=formats, language=args.language,
         hotwords=hotwords, progress=display,
     )
     for path in (result.mp3, *result.paths):
         print(path, flush=True)
+    if notes and result.transcript.segments:
+        # As after `studybuddy add`, a notes problem is reported but doesn't fail the transcription.
+        try:
+            print(study_notes.notes_for_transcript(result.paths[formats.index("json")], progress=display), flush=True)
+        except EnrichmentError as exc:
+            log.error("%s (--no-notes skips them)", exc)
     return 0
 
 
@@ -429,10 +448,12 @@ def _main(argv: list[str] | None) -> int:
                     f"Interrupted. Finished sections are saved in {partial}; "
                     "run the same command again to resume."
                 )
+            elif note := getattr(exc, "note", None):
+                display.message(note)
             else:
                 display.message("Interrupted before any transcription was saved.")
             return EXIT_INTERRUPTED
-        except (CliError, audio.AudioError, LibraryError, IngestError, ValueError, OSError) as exc:
+        except (CliError, audio.AudioError, LibraryError, IngestError, EnrichmentError, ValueError, OSError) as exc:
             log.debug("error details", exc_info=True)
             display.message(f"studybuddy: error: {exc}")
             return EXIT_ERROR
