@@ -199,18 +199,31 @@ class Searcher:
         return by_ord.get(ord_ - 1), by_ord.get(ord_ + 1)
 
     def source(self, source_id: int) -> sqlite3.Row | None:
-        return self.conn.execute("SELECT * FROM source WHERE id = ?", (source_id,)).fetchone()
+        """The source, with ``library_root``: the folder its ``view_path`` is relative to ('' for the index's own)."""
+        return self.conn.execute(
+            """SELECT s.*, l.root AS library_root
+                 FROM source s JOIN course c ON c.id = s.course_id JOIN library l ON l.id = c.library_id
+                WHERE s.id = ?""",
+            (source_id,),
+        ).fetchone()
 
     def courses(self) -> list[dict]:
         rows = self.conn.execute(
-            """SELECT c.slug, c.title, s.kind, COUNT(DISTINCT s.id) AS files,
+            """SELECT c.slug, c.title, l.name AS library, s.kind, COUNT(DISTINCT s.id) AS files,
                       GROUP_CONCAT(DISTINCT s.week) AS weeks
-                 FROM course c LEFT JOIN source s ON s.course_id = c.id
-                GROUP BY c.id, s.kind ORDER BY c.slug"""
+                 FROM course c JOIN library l ON l.id = c.library_id LEFT JOIN source s ON s.course_id = c.id
+                GROUP BY c.id, s.kind ORDER BY c.library_id, c.slug"""
         ).fetchall()
+        notes = dict(self.conn.execute(
+            """SELECT c.slug, COUNT(*) FROM notes n JOIN source s ON s.id = n.source_id
+                 JOIN course c ON c.id = s.course_id GROUP BY c.id"""
+        ).fetchall())
         courses: dict[str, dict] = {}
         for r in rows:
-            entry = courses.setdefault(r["slug"], {"slug": r["slug"], "title": r["title"], "files": {}, "weeks": set()})
+            entry = courses.setdefault(r["slug"], {
+                "slug": r["slug"], "title": r["title"], "library": r["library"], "files": {}, "weeks": set(),
+                "notes": notes.get(r["slug"], 0),
+            })
             if r["kind"]:
                 entry["files"][r["kind"]] = r["files"]
             entry["weeks"].update(int(w) for w in (r["weeks"] or "").split(",") if w)

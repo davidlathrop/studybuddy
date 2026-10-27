@@ -4,13 +4,15 @@
       library.toml                    settings (transcription mode, exam copies, documents, enrichment)
       courses/<slug>/videos/          transcripts (.json/.txt) and 540p exam copies of each video
       courses/<slug>/docs/            copies of slides, PDFs and Word files, plus PDFs for viewing
+      courses/<slug>/notes/           study notes written by Claude: one per video, plus index.md
       courses/<slug>/glossary.txt     course terms: transcription hotwords, later aliases
-      build/library.sqlite            courses, sources and passages (plans/exam-search-plan.md §4)
+      build/library.sqlite            courses, sources, passages and AI runs (plans/exam-search-plan.md §4)
 
 A command finds its library from ``--library``, then ``$STUDYBUDDY_LIBRARY``, then the nearest
 folder above the current directory holding a ``library.toml``, then the default recorded by
 ``studybuddy library init``. A folder made with ``studybuddy session`` keeps its library in a
-``.studybuddy`` subfolder; naming the folder itself is enough.
+``.studybuddy`` subfolder; naming the folder itself is enough. Its study notes go in a
+visible ``Study notes`` folder next to the videos.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ from typing import Any
 
 CONFIG_FILE = "library.toml"
 SESSION_DIR = ".studybuddy"  # a one-sitting library inside the folder of its videos
+SESSION_NOTES_DIR = "Study notes"  # a sitting's notes, next to its videos
 DB_PATH = Path("build") / "library.sqlite"
 SLUG = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 
@@ -55,6 +58,9 @@ convert = true           # convert PPTX/DOCX to PDF with PowerPoint/Word, for vi
 backend = "claude-cli"   # claude-cli or bedrock
 model = "claude-opus-5-5"
 effort = "medium"
+
+[notes]
+auto = true              # write study notes for new videos after `add` and `session` (with [enrich])
 """
 
 _SCHEMA_V1 = """
@@ -99,7 +105,30 @@ CREATE TABLE passage(
 CREATE INDEX passage_source ON passage(source_id);
 """
 
-MIGRATIONS = [_SCHEMA_V1]  # index i upgrades user_version i -> i + 1
+_SCHEMA_V2 = """
+CREATE TABLE run(
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    task               TEXT NOT NULL,   -- what the AI made, e.g. 'notes'
+    prompt_version     TEXT NOT NULL,
+    model_id           TEXT NOT NULL,
+    params_json        TEXT NOT NULL,   -- backend, effort, number of calls
+    schema_ver         TEXT NOT NULL,
+    input_sha          TEXT NOT NULL,   -- the input as sent: unchanged input is not sent again
+    created_at         TEXT NOT NULL,
+    input_tokens       INTEGER,
+    output_tokens      INTEGER,
+    cache_write_tokens INTEGER,
+    cache_read_tokens  INTEGER,
+    cost_usd           REAL             -- billed, or the list-price equivalent on a subscription
+);
+CREATE TABLE notes(
+    source_id INTEGER PRIMARY KEY REFERENCES source(id) ON DELETE CASCADE,
+    run_id    INTEGER NOT NULL REFERENCES run(id),
+    data      TEXT NOT NULL             -- the checked study notes (enrich.notes.StudyNotes) as JSON
+);
+"""
+
+MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2]  # index i upgrades user_version i -> i + 1
 
 
 class LibraryError(Exception):
@@ -134,12 +163,18 @@ class EnrichSettings:
 
 
 @dataclass(frozen=True)
+class NotesSettings:
+    auto: bool = True
+
+
+@dataclass(frozen=True)
 class Settings:
     name: str = ""
     transcribe: TranscribeSettings = field(default_factory=TranscribeSettings)
     exam_copy: ExamCopySettings = field(default_factory=ExamCopySettings)
     documents: DocumentSettings = field(default_factory=DocumentSettings)
     enrich: EnrichSettings = field(default_factory=EnrichSettings)
+    notes: NotesSettings = field(default_factory=NotesSettings)
 
     @classmethod
     def from_toml(cls, data: dict[str, Any]) -> Settings:
@@ -159,6 +194,7 @@ class Settings:
             exam_copy=section("exam_copy", ExamCopySettings),
             documents=section("documents", DocumentSettings),
             enrich=section("enrich", EnrichSettings),
+            notes=section("notes", NotesSettings),
         )
 
 
@@ -255,6 +291,16 @@ class Library:
 
     def course_dir(self, slug: str) -> Path:
         return self.root / "courses" / slug
+
+    def notes_dir(self, slug: str) -> Path:
+        """Where a course's study notes go; a session's go next to its videos, where they are seen."""
+        if self.root.name == SESSION_DIR:
+            return self.root.parent / SESSION_NOTES_DIR
+        return self.course_dir(slug) / "notes"
+
+    def notes_file(self, slug: str, transcript: str) -> Path:
+        """The study notes of the video whose transcript is stored at ``transcript``."""
+        return self.notes_dir(slug) / f"{Path(transcript).stem}.notes.md"
 
     def add_course(self, slug: str, title: str, *, glossary: Path | None = None) -> Course:
         if not SLUG.match(slug):

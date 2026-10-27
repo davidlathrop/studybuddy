@@ -78,6 +78,69 @@ class SourceOutline(_Strict):
     glossary: list[GlossaryEntry]
 
 
+# --- study notes (enrich/notes.py) ---------------------------------------------------------
+
+
+class NotesSectionPlan(_Strict):
+    title: str
+    first_passage_id: int
+    last_passage_id: int
+
+
+class Announcement(_Strict):
+    text: str
+    passage_id: int
+
+
+class NotesOutline(_Strict):
+    """Notes call 1: one per lecture."""
+
+    title: str
+    overview: str
+    sections: list[NotesSectionPlan]
+    announcements: list[Announcement]
+
+
+class KeyPoint(_Strict):
+    point: str
+    details: list[str]
+    passage_id: int
+
+
+class KeyTerm(_Strict):
+    term: str
+    definition: str
+    passage_id: int
+    quote: str = Field(description="Verbatim excerpt of the passage where the term is defined or explained.")
+
+
+class NoteItem(_Strict):
+    text: str
+    passage_id: int
+
+
+class ReviewQuestion(_Strict):
+    question: str
+    answer: str
+    passage_id: int
+
+
+class SectionNotes(_Strict):
+    section: int
+    summary: str
+    key_points: list[KeyPoint]
+    key_terms: list[KeyTerm]
+    examples: list[NoteItem]
+    emphasis: list[NoteItem]
+    review_questions: list[ReviewQuestion]
+
+
+class NotesWindow(_Strict):
+    """Notes call 2: one per group of consecutive sections."""
+
+    sections: list[SectionNotes]
+
+
 _DROP = {"title", "default"}
 
 

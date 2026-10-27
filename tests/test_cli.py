@@ -1,8 +1,8 @@
 """Tests for the ``studybuddy transcribe`` command line.
 
-Unit tests swap the speech model for a fake through ``transcribe.make_transcriber``; probing,
-MP3 extraction, decoding, sectioning and output writing all run for real on small generated
-media. Tests marked ``model`` run the whole command with the real models
+Unit tests swap the speech model for a fake through ``transcribe.make_transcriber`` (and Claude,
+which writes the study notes, for ``fakes.FakeClaude``); probing, MP3 extraction, decoding,
+sectioning and output writing all run for real on small generated media. Tests marked ``model`` run the whole command with the real models
 (STUDYBUDDY_MODEL_TESTS=1).
 """
 
@@ -246,7 +246,7 @@ def test_full_run_writes_every_output(
     assert run(video, "--language", "en", "--hotwords-file", terms, "--formats", "txt,srt,json") == 0
     out, err = capsys.readouterr()
 
-    assert out.splitlines() == outputs(video, "mp3", "txt", "srt", "json")
+    assert out.splitlines() == outputs(video, "mp3", "txt", "srt", "json", "notes.md")
     assert video.with_suffix(".txt").read_text(encoding="utf-8") == "Hello there.\n\nGeneral Kenobi.\n"
     srt = video.with_suffix(".srt").read_text(encoding="utf-8")
     assert srt.startswith("1\n00:00:00,000 --> 00:00:07,") and "\n\n2\n00:00:07," in srt
@@ -284,8 +284,8 @@ def test_progress_is_reported_in_plain_lines_when_not_a_terminal(
 def test_out_dir(video: Path, models: Models, capsys: pytest.CaptureFixture) -> None:
     out_dir = video.parent / "out" / "nested"
     assert run(video, "--out-dir", out_dir, "--formats", "srt") == 0
-    assert capsys.readouterr().out.splitlines() == [str(out_dir / "lecture.mp3"), str(out_dir / "lecture.srt")]
-    assert sorted(p.name for p in out_dir.iterdir()) == ["lecture.mp3", "lecture.srt"]
+    assert capsys.readouterr().out.splitlines() == [str(out_dir / f"lecture.{ext}") for ext in ("mp3", "srt", "json", "notes.md")]
+    assert sorted(p.name for p in out_dir.iterdir()) == ["lecture.json", "lecture.mp3", "lecture.notes.md", "lecture.srt"]
     assert sorted(p.name for p in video.parent.iterdir()) == ["lecture.mp4", "out"]
 
 
@@ -308,7 +308,7 @@ def test_awkward_file_names(video: Path, models: Models, capsys: pytest.CaptureF
     src = video.rename(video.with_name("-week 3: café.v2.mp4"))
     assert run(src, "--formats", "txt,json") == 0
     out = capsys.readouterr().out.splitlines()
-    assert out == [str(src.with_name(f"-week 3: café.v2.{ext}")) for ext in ("mp3", "txt", "json")]
+    assert out == [str(src.with_name(f"-week 3: café.v2.{ext}")) for ext in ("mp3", "txt", "json", "notes.md")]
     assert json.loads(Path(out[2]).read_text(encoding="utf-8"))["source"] == "-week 3: café.v2.mp4"
 
 
@@ -331,7 +331,7 @@ def test_an_mp3_input_is_transcribed_in_place(
     forbid_extraction(monkeypatch)
     assert run(mp3) == 0
     out, err = capsys.readouterr()
-    assert out.splitlines() == [str(mp3), str(mp3.with_suffix(".txt"))]
+    assert out.splitlines() == [str(mp3), *(str(mp3.with_suffix(ext)) for ext in (".txt", ".json", ".notes.md"))]
     assert "talk.mp3 is already the MP3" in err
 
 
@@ -349,7 +349,7 @@ def test_no_speech_still_writes_the_outputs_with_a_warning(
 def test_quiet_prints_only_the_paths(video: Path, models: Models, capsys: pytest.CaptureFixture) -> None:
     assert run(video, "-q") == 0
     out, err = capsys.readouterr()
-    assert out.splitlines() == outputs(video, "mp3", "txt")
+    assert out.splitlines() == outputs(video, "mp3", "txt", "json", "notes.md")
     assert err == ""
 
 
@@ -444,7 +444,7 @@ def test_ctrl_c_saves_progress_and_a_rerun_resumes(
     assert extracted == [video.with_suffix(".mp3")]
     assert re.search(r"^resuming lecture\.mp3: 1 of \d+ sections already done$", err, re.M)
     assert "warning" not in err
-    assert out.splitlines() == outputs(video, "mp3", "json")
+    assert out.splitlines() == outputs(video, "mp3", "json", "notes.md")
     rest = models.last.calls
     assert len(rest) >= 2 and all(c["offset_s"] > first[0]["offset_s"] for c in rest)  # section 1 skipped
     segments = json.loads(video.with_suffix(".json").read_text(encoding="utf-8"))["segments"]
@@ -605,7 +605,7 @@ def test_real_end_to_end(
     elapsed = time.perf_counter() - started
     out, err = capsys.readouterr()
     assert rc == 0, err
-    assert out.splitlines() == outputs(video, "mp3", "txt", "srt", "json")
+    assert out.splitlines() == outputs(video, "mp3", "txt", "srt", "json", "notes.md")
 
     txt = video.with_suffix(".txt").read_text(encoding="utf-8")
     score = jiwer.wer(_norm(speech_text), _norm(txt))

@@ -20,7 +20,7 @@ FORMATS = ("txt", "srt", "json")
 def write_txt(t: Transcript, path: Path) -> None:
     """One paragraph per non-empty segment, separated by blank lines."""
     paragraphs = [text for _, text in _texts(t.segments)]
-    _write_atomic(Path(path), "\n\n".join(paragraphs) + "\n" if paragraphs else "")
+    write_atomic(Path(path), "\n\n".join(paragraphs) + "\n" if paragraphs else "")
 
 
 def write_srt(t: Transcript, path: Path) -> None:
@@ -30,7 +30,7 @@ def write_srt(t: Transcript, path: Path) -> None:
         start_ms = _to_ms(seg.start)
         end_ms = max(_to_ms(seg.end), start_ms + 1)  # players drop cues that do not advance
         cues.append(f"{number}\n{_srt_time(start_ms)} --> {_srt_time(end_ms)}\n{text}\n")
-    _write_atomic(Path(path), "\n".join(cues))
+    write_atomic(Path(path), "\n".join(cues))
 
 
 def write_json(t: Transcript, path: Path) -> None:
@@ -46,7 +46,7 @@ def write_json(t: Transcript, path: Path) -> None:
             for s in t.segments
         ],
     }
-    _write_atomic(Path(path), json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    write_atomic(Path(path), json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
 
 _WRITERS: dict[str, Callable[[Transcript, Path], None]] = {
@@ -98,7 +98,7 @@ def _srt_time(ms: int) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 
-def _write_atomic(path: Path, text: str) -> None:
+def write_atomic(path: Path, text: str) -> None:
     # O_EXCL with mode 0o666 gives the temp file the same permissions (after umask)
     # as a normally created file, unlike tempfile.mkstemp's 0o600.
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")

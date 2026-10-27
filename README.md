@@ -1,7 +1,10 @@
 # studybuddy
 
 Turn lecture videos into an MP3 of the audio and a transcript, locally on an Apple silicon
-Mac. Nothing is uploaded anywhere, and no API keys are needed.
+Mac, and the transcripts into study notes. Transcription runs entirely on the Mac with no API
+keys. Only the study notes need the network: Claude writes them from the transcript, through
+the `claude` command and your Claude login ([Study notes](#study-notes)). Add `--no-notes`
+and nothing leaves the Mac.
 
 ```console
 $ studybuddy transcribe lecture.mp4 --formats txt,srt
@@ -17,6 +20,10 @@ Done in 2:43 (23x real time): 63 segments; language: English
 lecture.mp3
 lecture.txt
 lecture.srt
+lecture.json
+Writing study notes for lecture (1:02:13, 63 passages) with claude-opus-5-5
+...
+lecture.notes.md
 ```
 
 ## What it does
@@ -28,6 +35,8 @@ lecture.srt
    [mlx-audio](https://github.com/Blaizzy/mlx-audio). Each finished section is saved right
    away, so an interrupted run can resume (see [Resuming](#resuming)).
 5. Writes the transcript as `.txt` and, if you ask for them, `.srt` and `.json`.
+6. Has Claude write study notes from the transcript to `lecture.notes.md` (see
+   [Study notes](#study-notes)), unless you pass `--no-notes`.
 
 The design, the model choice and the measurements behind it are in
 [plans/mp4-transcription-plan.md](plans/mp4-transcription-plan.md).
@@ -50,15 +59,23 @@ studybuddy session ~/Videos/econ-workshop-oct-15
 - **Re-runnable.** Run it again after adding files and only the new ones are processed.
 - **Or into a course.** To put a sitting into a course of your semester library instead,
   add the folder there: `studybuddy add bio101 ~/Videos/econ-workshop-oct-15`.
-- **Then the search page.** It builds the exam index and opens the search page. Reopen
-  the search later with `exam/.venv/bin/studybuddy-exam ~/Videos/econ-workshop-oct-15`.
+- **Study notes.** It writes study notes for every video into a `Study notes` folder next
+  to the videos: one file per video, plus `index.md` for the sitting. See
+  [Study notes](#study-notes).
+- **Then the search page.** It builds the exam index and opens the search page. Click
+  **Study notes** there to read the sitting's notes. Reopen the search later with
+  `exam/.venv/bin/studybuddy-exam ~/Videos/econ-workshop-oct-15`.
+- **Several sittings together.** Keep the sitting folders in `~/StudyBuddy`, or link to
+  them from there, and `studybuddy serve` searches them all from one page (see
+  [Exam day](#exam-day-searching-the-library)).
 - **Options:**
   - `--title` names the sitting.
   - `--mode fast` transcribes about 3× faster.
+  - `--no-notes` skips the study notes, so nothing leaves the Mac.
   - `--no-search` only processes the files.
   - `--port` picks the search page's port.
 - **Time:** about 3–4 minutes per hour of video in accurate mode, plus a few seconds per
-  document.
+  document, plus the study notes.
 
 ## Building a semester library
 
@@ -80,7 +97,7 @@ What `add` does with each kind of file:
 
 | File | What is kept in the library | Locations |
 |---|---|---|
-| Video (MP4, MOV, MKV, M4V, WebM) | The transcript (`.json`, `.txt`) and a 540p "exam copy" of the video, about 250 MB per hour, made with the Mac's hardware encoder. The original is not copied; you can move or delete it afterwards. | Start and end time of each ~1-minute passage |
+| Video (MP4, MOV, MKV, M4V, WebM) | The transcript (`.json`, `.txt`), a 540p "exam copy" of the video, about 250 MB per hour, made with the Mac's hardware encoder, and [study notes](#study-notes). The original is not copied; you can move or delete it afterwards. | Start and end time of each ~1-minute passage |
 | PowerPoint (.pptx) | A copy, plus a PDF made with PowerPoint for viewing (hidden slides included, so page N is slide N) | Slide number; slide text, speaker notes and text in pictures (read with Apple's OCR) are separate passages |
 | PDF | A copy | Page number; scanned pages are read with OCR; long pages are split |
 | Word (.docx) | A copy, plus a PDF made with Word | Heading path ("Chapter 2 > 2.1 Glycolysis") and page number |
@@ -91,7 +108,8 @@ What `add` does with each kind of file:
 - The library is found from `--library PATH`, then `$STUDYBUDDY_LIBRARY`, then the folder
   you are in (or any folder above it), then the library `library init` last created.
 - `library.toml` in the library holds the settings: transcription mode and language,
-  exam-copy size, OCR and PDF conversion on/off, and the enrichment model.
+  exam-copy size, OCR and PDF conversion on/off, the enrichment backend and model, and
+  whether `add` writes study notes.
 - Course terms in `courses/<course>/glossary.txt` are used as transcription hotwords.
 - Adding a file that is already in the course does nothing. Adding a different file with
   the same name needs `--replace`.
@@ -101,6 +119,61 @@ What `add` does with each kind of file:
   macOS asks to let the terminal control them. Without them (or with `--no-convert`) the
   files are still added and searchable, just without a PDF to open.
 
+## Study notes
+
+Claude writes study notes for every video studybuddy transcribes: after `transcribe`,
+after `add` (for the videos it adds), after `session` (for every video in the sitting), and
+whenever you run `studybuddy notes`.
+
+```sh
+studybuddy notes                  # every course: the videos whose notes are missing
+studybuddy notes bio101           # one course
+studybuddy notes bio101 --redo    # write them again, e.g. after changing the model
+studybuddy notes lecture.json     # a transcript outside any library -> lecture.notes.md
+```
+
+- **What's in them.** For each video, `courses/<course>/notes/<video>.notes.md` contains:
+  - a title and an overview;
+  - announcements: exams, assignments, readings, deadlines;
+  - one section per topic. Each section has a summary, key points, key terms (each with
+    the lecturer's own words), examples, and what the lecturer stressed;
+  - review questions, with the answers in a separate part so you can test yourself.
+
+  `index.md` lists every lecture with its overview. It also collects all announcements and
+  an A–Z glossary of key terms for the whole course.
+- **Where they point.** Every item ends with a time like `[12:40]`: the start of the
+  passage (about a minute long) where the lecture says it. The times come from the
+  transcript, not from Claude.
+- **What is checked.** Claude is told to use only what the lecture says. Each key term's
+  quote is checked against the transcript, and any quote that isn't found is left out.
+  The notes are still AI-written from a machine transcript, so check anything important
+  at its time in the lecture.
+- **How.** One call outlines the lecture, then one call per ~20 minutes of lecture writes
+  its sections. Both use the `[enrich]` backend and model in `library.toml` (Claude Opus
+  5.5 through `claude -p` by default, on your Claude subscription). A 10-minute lecture
+  took about 1¼ minutes.
+- **Only once.** A video's notes are written again only when its transcript or the notes
+  prompts change, or with `--redo`. You can edit a notes file: it is kept until `--redo`.
+  `index.md` is rewritten every time.
+- **Turning them off.** `--no-notes` skips them for `transcribe`, `add` or `session`. In a
+  library, `[notes] auto = false` in `library.toml` turns them off for good. `studybuddy notes`
+  still works afterwards.
+  `studybuddy status` shows how many videos have notes, and `studybuddy status COURSE`
+  marks the videos without notes.
+- **Problems.** If `claude` isn't installed, a call fails, or a usage limit is reached,
+  the transcripts are still written and the videos still added, and the command doesn't fail
+  because of it. studybuddy says which notes are missing and which command writes them
+  later. Ctrl-C keeps the notes already written.
+- **In the search page.** `studybuddy build-exam` puts the notes in the exam index, and
+  `studybuddy notes` updates an index that is already there. In the search page, click
+  **Study notes** to see a course's lectures, announcements and glossary. Open a lecture's
+  notes and click any time to play the lecture from there, with the transcript below. See
+  [Exam day](#exam-day-searching-the-library).
+- **For a single file:** `studybuddy transcribe lecture.mp4` writes `lecture.notes.md` next to
+  the transcript. It also keeps `lecture.json`, even if you didn't ask for that format,
+  because the notes are made from it: if they fail, `studybuddy notes lecture.json` redoes
+  them without transcribing again.
+
 ## Exam day: searching the library
 
 The search runs as a separate, small program, `studybuddy-exam`, in its own environment.
@@ -108,10 +181,22 @@ Only four packages are installed there (a web server, fuzzy string matching and 
 code; listed in [exam/requirements.lock](exam/requirements.lock)) and no AI library at all.
 
 ```sh
+studybuddy serve                              # every library in ~/StudyBuddy, in one page
 studybuddy build-exam                         # after adding files: refresh the exam index
+                                              # (studybuddy status says when it is out of date)
 exam/.venv/bin/studybuddy-exam                # opens the search page in Chrome
 exam/.venv/bin/studybuddy-exam ~/StudyBuddy/fall-2026 --port 8765 --no-browser
 ```
+
+- **Everything in ~/StudyBuddy at once:** `studybuddy serve` (or `studybuddy serve FOLDER`)
+  looks for libraries and session folders in `~/StudyBuddy` and its subfolders.
+  - It rebuilds any exam index that is missing or out of date, then opens one search page
+    for all of them, study notes included.
+  - The course list groups the courses by library.
+  - It follows links to folders, so a link brings in session folders kept elsewhere, such as
+    in OneDrive: `ln -s ~/Library/CloudStorage/OneDrive-…/"Term 5" ~/StudyBuddy/`.
+  - `exam/.venv/bin/studybuddy-exam ~/StudyBuddy` opens the same page without rebuilding
+    anything, as on exam day.
 
 - **What it does:** search every course at once or filter by course, kind of file and week.
   Results are ranked so passages containing all your words come first. Misspellings get a
@@ -119,12 +204,26 @@ exam/.venv/bin/studybuddy-exam ~/StudyBuddy/fall-2026 --port 8765 --no-browser
 - **Where results go:** a video result plays the exam copy from that moment. A slide, PDF or
   Word result opens the bundled PDF viewer at that slide or page with your words
   highlighted. Results without a PDF show their text.
+- **Study notes:** click **Study notes** next to the course list (or choose a course with the
+  search box empty) to read a course's study notes.
+  - The course page lists the lectures in order, each with its overview. It also shows
+    the course's announcements and an A–Z glossary of key terms, where each term links to
+    where it was explained.
+  - A lecture's page has its sections, key points, key terms, examples, and review
+    questions (click one to show its answer).
+  - Every point has its time in the margin. Clicking the time plays the lecture from there
+    and shows that part of the transcript below the video, so you can check the notes
+    against what was said.
+  - The notes are labelled as written by AI before the exam. They are shown but not
+    searched: search results come from the original material only.
+  - Typing a search shows results; clearing it brings the notes back. The browser's Back
+    button steps back through the pages of notes.
 - **How "no AI" is enforced and shown:**
   - The first thing the program does is install a Python audit hook. From then on, importing
     any AI or machine-learning library (or the studybuddy builder) is refused.
   - Any network connection or name lookup that isn't to this computer is refused too.
   - The page's status line shows "No AI · Offline", the index's fingerprint and when it was
-    built.
+    built. With several libraries, hovering over it lists each library's index fingerprint.
   - The page itself may load only files from this computer (Content-Security-Policy), and the
     server listens on 127.0.0.1 only.
   - Keep Wi-Fi off as well. Native code making raw system calls could bypass an audit hook.
@@ -136,6 +235,9 @@ exam/.venv/bin/studybuddy-exam ~/StudyBuddy/fall-2026 --port 8765 --no-browser
 - A Mac with Apple silicon (M1 or later). MLX does not run on Intel Macs.
 - Python 3.12 or later.
 - ffmpeg with the `libmp3lame` encoder: `brew install ffmpeg`.
+- For study notes: [Claude Code](https://claude.com/claude-code) (the `claude` command),
+  signed in to your Claude account. Alternatively, Amazon Bedrock: set
+  `[enrich] backend = "bedrock"`.
 - About 5 GB of disk space for the two models (about 2.5 GB each). Each one is downloaded
   into `~/.cache/huggingface` the first time its mode is used.
 
@@ -158,7 +260,7 @@ This installs the `studybuddy` command into `.venv/bin` and `studybuddy-exam` in
 ```
 studybuddy transcribe INPUT [--mode accurate|fast] [--language L]
                             [--formats txt,srt,json] [--hotwords-file F]
-                            [--out-dir D] [-v | -q]
+                            [--out-dir D] [--no-notes] [-v | -q]
 ```
 
 | Option | Meaning |
@@ -169,6 +271,7 @@ studybuddy transcribe INPUT [--mode accurate|fast] [--language L]
 | `--formats` | A comma-separated list of transcript formats from `txt`, `srt` and `json`. The default is `txt`. |
 | `--hotwords-file F` | Names and technical terms the model should favour. Used in accurate mode only. See [Hotwords](#hotwords). |
 | `--out-dir D` | Where to write the outputs. The default is the folder the input is in. |
+| `--no-notes` | Don't write study notes. By default Claude writes them from the transcript (which sends it to Claude); with this option nothing leaves the Mac. See [Study notes](#study-notes). |
 | `-v`, `--verbose` | Also show debug messages, such as the exact ffmpeg commands. |
 | `-q`, `--quiet` | Show only warnings and errors. The output paths are still printed. |
 
@@ -224,7 +327,8 @@ For `lecture.mp4` the outputs are written to the same folder, or to `--out-dir`:
 | `lecture.mp3` | The first audio track, mono, 96 kbps. It keeps the video's timeline: if the audio track starts late or has gaps, they are filled with silence, so transcript times match the video. |
 | `lecture.txt` | The transcript, one paragraph per segment. |
 | `lecture.srt` | Subtitles, one cue per segment (requested with `--formats ...,srt`). |
-| `lecture.json` | `{source, model, mode, language, duration_s, segments: [{start, end, text, language}]}`, with times in seconds (requested with `--formats ...,json`). |
+| `lecture.json` | `{source, model, mode, language, duration_s, segments: [{start, end, text, language}]}`, with times in seconds (requested with `--formats ...,json`, and always written with the study notes). |
+| `lecture.notes.md` | Study notes written by Claude (unless `--no-notes`). See [Study notes](#study-notes). |
 
 Each file is written to a temporary name first and renamed once it is complete, so a file
 with the final name is never half-written.
@@ -303,7 +407,7 @@ tests need both.
 ```
 src/studybuddy/
   cli.py          # the command line: transcribe, plus the library commands from commands.py
-  commands.py     # library init, course add|list, add, status
+  commands.py     # library init, course add|list, add, notes, status, build-exam, session, serve
   library.py      # the library folder, library.toml settings, the build database
   transcription.py # one file -> MP3 + transcript (shared by transcribe and add)
   audio.py        # ffprobe checks, MP3 extraction, exam copies, decoding to 16 kHz
@@ -312,15 +416,20 @@ src/studybuddy/
   output.py       # .txt / .srt / .json writers
   types.py        # Segment, Transcript
   ingest/         # add: video, pptx, pdf, docx, OCR, Office-to-PDF conversion
-  enrich/         # AI enrichment backends, schemas and prompts (exam-search plan §6)
-  exam_export.py  # build-exam: library -> exam/exam.sqlite
+  enrich/         # AI enrichment backends, schemas and prompts (exam-search plan §6);
+                  # notes.py writes, checks and renders study notes
+  study_notes.py  # notes: which videos need notes, the run record, the Markdown files
+  exam_export.py  # build-exam: library (and its study notes) -> exam/exam.sqlite
 exam/             # studybuddy-exam: the separate, AI-free exam app
   src/studybuddy_exam/
     __main__.py   # installs the guard first, then starts the server on 127.0.0.1
     guard.py      # the audit hook: no AI imports, loopback-only network
     index_format.py # exam.sqlite layout, building and opening (FTS5 + trigram + vocabulary)
+    locate.py     # finding the library, or every library in a folder
+    collection.py # several libraries' indexes combined into one search
     query.py      # safe query building, stopwords
     search.py     # ranking tiers, filters, snippets, "did you mean"
+    notes.py      # the study notes pages: a course's lectures and glossary, one lecture
     server.py     # Starlette app: page, JSON API, files with Range, CSP
     static/       # the search page and the bundled PDF.js viewer
   tests/

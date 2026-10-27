@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 import media
+from fakes import FakeClaude
 
 MODEL_TESTS_ENV = "STUDYBUDDY_MODEL_TESTS"
 OFFICE_TESTS_ENV = "STUDYBUDDY_OFFICE_TESTS"
@@ -32,6 +33,14 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             # and parametrize ids, so a test merely named "...model..." would be skipped.
             if item.get_closest_marker(marker) is not None:
                 item.add_marker(skip)
+
+
+@pytest.fixture(autouse=True)
+def fake_claude(monkeypatch: pytest.MonkeyPatch) -> FakeClaude:
+    """No test talks to Claude: study notes (written after add and session) come from a fake."""
+    fake = FakeClaude()
+    monkeypatch.setattr("studybuddy.study_notes.make_backend", lambda name: fake)
+    return fake
 
 
 @pytest.fixture(scope="session")

@@ -1,11 +1,24 @@
-"""Fake speech models shared by the CLI and ingestion tests."""
+"""Fake speech models and a fake Claude, shared by the CLI and ingestion tests."""
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import numpy as np
 
+from studybuddy.enrich.backends import BackendResult, Usage
+from studybuddy.enrich.schemas import (
+    Announcement,
+    KeyPoint,
+    KeyTerm,
+    NoteItem,
+    NotesOutline,
+    NotesSectionPlan,
+    NotesWindow,
+    ReviewQuestion,
+    SectionNotes,
+)
 from studybuddy.types import SAMPLE_RATE, ProgressFn, Segment
 
 TEXTS = ("Hello there.", "General Kenobi.")
@@ -71,3 +84,51 @@ class Models:
     @property
     def last(self) -> FakeTranscriber:
         return self.created[-1]
+
+
+class FakeClaude:
+    """Stands in for an enrichment backend: answers the study-notes calls from what it is sent.
+
+    The outline makes one section per passage; each section's notes quote the start of its
+    passage. ``fail`` is raised on the call numbered ``fail_on`` (from 1), and ``skip``
+    lists sections a sections call leaves out.
+    """
+
+    name = "fake"
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self.fail: BaseException | None = None
+        self.fail_on = 1
+        self.skip: set[int] = set()
+
+    def call(self, *, model: str, system: str, context: str, prompt: str, output: type,
+             effort: str = "medium", max_tokens: int = 32000) -> BackendResult:
+        self.calls.append({"model": model, "system": system, "context": context, "prompt": prompt,
+                           "output": output.__name__, "effort": effort})
+        if self.fail is not None and len(self.calls) >= self.fail_on:
+            raise self.fail
+        passages = {int(i): text for i, text in re.findall(r"^\[P(\d+) [^\]]+\] (.*)$", context, re.M)}
+        if output is NotesOutline:
+            data: Any = NotesOutline(
+                title="Notes title", overview="What the lecture covers.",
+                sections=[NotesSectionPlan(title=f"Topic {i}", first_passage_id=i, last_passage_id=i) for i in passages],
+                announcements=[Announcement(text="The quiz is on Friday.", passage_id=1)],
+            )
+        else:
+            first, last = map(int, re.search(r"sections S(\d+)-S(\d+)", prompt).groups())
+            spans = {int(n): int(p) for n, p in re.findall(r"^- S(\d+) \(P(\d+)-P\d+\)", prompt, re.M)}
+            data = NotesWindow(sections=[
+                SectionNotes(
+                    section=n, summary=f"Summary {n}.",
+                    key_points=[KeyPoint(point=f"Point {n}.", details=["A detail."], passage_id=spans[n])],
+                    key_terms=[KeyTerm(term=f"Term {n}", definition="What it means.", passage_id=spans[n],
+                                       quote=" ".join(passages[spans[n]].split()[:2]))],
+                    examples=[NoteItem(text="An example.", passage_id=spans[n])], emphasis=[],
+                    review_questions=[ReviewQuestion(question=f"Question {n}?", answer=f"Answer {n}.",
+                                                     passage_id=spans[n])],
+                )
+                for n in range(first, last + 1) if n not in self.skip
+            ])
+        return BackendResult(data=data, model=model, usage=Usage(input_tokens=10, output_tokens=20),
+                             cost_usd=0.01, seconds=0.1, attempts=1, meta={"five_hour_utilization": 0.25})

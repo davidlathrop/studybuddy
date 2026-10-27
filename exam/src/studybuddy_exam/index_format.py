@@ -4,9 +4,14 @@ The exam app reads this file and nothing else from the library besides the files
 so this module owns the format. The builder (``studybuddy build-exam``) hands it plain rows
 and calls :func:`build`; the exam app calls :func:`open_index`. Nothing here uses AI.
 
-Layout (format 1):
+Layout (format 3):
 
 * ``meta``: key/value facts about the build (format version, time, library name, counts).
+* ``library``: where the files are. Every course belongs to a library, and a source's
+  ``view_path`` is relative to its library's ``root``. An index built by the builder holds
+  one library with an empty root: the folder the index is in (``<library>/exam/exam.sqlite``).
+  The exam app makes one with several libraries when it is started on a folder of them
+  (``collection.py``); their roots are absolute.
 * ``course``, ``source``, ``passage``: what can be found and where it lives. ``passage``
   has the original ``text`` plus three columns for enrichment (``aliases``, ``questions``,
   ``context``), empty until enrichment exists (plan milestone E3).
@@ -14,10 +19,16 @@ Layout (format 1):
 * ``passage_tri``: FTS5 trigram index over ``text``, for partial words.
 * ``vocab``: every indexed word with its document frequency and Metaphone code, for
   "did you mean" suggestions.
+* ``notes``: the study notes of lecture videos (plan §6.8), written by AI before the exam
+  and only shown, never searched. ``data`` is JSON (see :class:`NotesRow`) in which every
+  point gives the exam passage it comes from and that passage's start time.
+
+Format 2 added ``notes``, format 3 ``library``.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import sqlite3
@@ -29,16 +40,22 @@ from typing import Any
 
 import jellyfish
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 3
 FILE_NAME = "exam.sqlite"
 MIN_VOCAB_LENGTH = 3
 
 SCHEMA = """
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE library(
+    id   INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    root TEXT NOT NULL            -- the folder view_path is relative to; '' for <library> of <library>/exam/
+);
 CREATE TABLE course(
-    id    INTEGER PRIMARY KEY,
-    slug  TEXT NOT NULL UNIQUE,
-    title TEXT NOT NULL
+    id         INTEGER PRIMARY KEY,
+    slug       TEXT NOT NULL UNIQUE,
+    title      TEXT NOT NULL,
+    library_id INTEGER NOT NULL REFERENCES library(id)
 );
 CREATE TABLE source(
     id         INTEGER PRIMARY KEY,
@@ -47,7 +64,7 @@ CREATE TABLE source(
     title      TEXT NOT NULL,
     week       INTEGER,
     date       TEXT,
-    view_path  TEXT,              -- relative to the library root: exam-copy video or PDF
+    view_path  TEXT,              -- relative to its library's root: exam-copy video or PDF
     duration_s REAL,
     page_count INTEGER
 );
@@ -81,6 +98,14 @@ CREATE TABLE vocab(
     metaphone TEXT NOT NULL
 ) WITHOUT ROWID;
 CREATE INDEX vocab_metaphone ON vocab(metaphone);
+CREATE TABLE notes(
+    source_id  INTEGER PRIMARY KEY REFERENCES source(id),
+    position   INTEGER NOT NULL,  -- lecture order within the course
+    title      TEXT NOT NULL,     -- what the lecture teaches, from the notes
+    model      TEXT NOT NULL,
+    written_at TEXT NOT NULL,
+    data       TEXT NOT NULL      -- JSON, see NotesRow
+);
 """
 
 
@@ -89,10 +114,18 @@ class ExamIndexError(Exception):
 
 
 @dataclass(frozen=True)
+class LibraryRow:
+    id: int
+    name: str
+    root: str = ""
+
+
+@dataclass(frozen=True)
 class CourseRow:
     id: int
     slug: str
     title: str
+    library_id: int = 1
 
 
 @dataclass(frozen=True)
@@ -125,33 +158,67 @@ class PassageRow:
     context: str = ""
 
 
+@dataclass(frozen=True)
+class NotesRow:
+    """One lecture's study notes. ``data`` is JSON::
+
+        {"overview": str,
+         "announcements": [{"text", AT}],
+         "sections": [{"title", "summary", "end_ms", AT,
+                       "key_points": [{"text", "details": [str], AT}],
+                       "key_terms": [{"term", "definition", "quote", AT}],
+                       "examples": [{"text", AT}], "emphasis": [{"text", AT}],
+                       "review_questions": [{"question", "answer", AT}]}]}
+
+    where AT is ``"passage_id"`` (a passage of this source) and ``"t_ms"`` (its start), both
+    null when the notes point at no passage. A key term's ``quote`` is words checked to be
+    in the transcript, or empty.
+    """
+
+    source_id: int
+    position: int
+    title: str
+    model: str
+    written_at: str
+    data: str
+
+
 def build(
     path: Path,
     *,
     courses: Iterable[CourseRow],
     sources: Iterable[SourceRow],
     passages: Iterable[PassageRow],
+    notes: Iterable[NotesRow] = (),
+    libraries: Iterable[LibraryRow] | None = None,
     meta: Mapping[str, Any] | None = None,
 ) -> Path:
-    """Write a complete index to ``path`` (atomically: a temporary file replaces it at the end)."""
+    """Write a complete index to ``path`` (atomically: a temporary file replaces it at the end).
+
+    Without ``libraries``, the courses belong to one library, named ``meta["library_name"]``,
+    whose root is the folder holding the index's ``exam`` folder.
+    """
     path = Path(path)
+    if libraries is None:
+        libraries = [LibraryRow(1, str((meta or {}).get("library_name", "")))]
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.building")
     tmp.unlink(missing_ok=True)
     conn = sqlite3.connect(tmp)
     try:
         conn.executescript(SCHEMA)
+        _insert(conn, "library", LibraryRow, libraries)
         _insert(conn, "course", CourseRow, courses)
         _insert(conn, "source", SourceRow, sources)
         _insert(conn, "passage", PassageRow, passages)
-        counts = {
-            table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-            for table in ("course", "source", "passage")
-        }
+        _insert(conn, "notes", NotesRow, notes)
+        tables = {"libraries": "library", "courses": "course", "sources": "source", "passages": "passage",
+                  "notes": "notes"}
+        counts = {key: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for key, table in tables.items()}
         info = {
             "format_version": FORMAT_VERSION,
             "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            **{f"{table}s": n for table, n in counts.items()},
+            **counts,
             **(meta or {}),
         }
         conn.executemany("INSERT INTO meta(key, value) VALUES (?, ?)", [(k, str(v)) for k, v in info.items()])
@@ -207,14 +274,16 @@ def _build_vocab(conn: sqlite3.Connection) -> None:
 class IndexInfo:
     path: Path
     meta: dict[str, str]
+    root: Path | None = None  # an index of several libraries: the folder they are in
 
     @property
     def library_root(self) -> Path:
-        return self.path.parent.parent  # <library>/exam/exam.sqlite
+        return self.root or self.path.parent.parent  # <library>/exam/exam.sqlite
 
 
-def open_index(path: Path) -> tuple[sqlite3.Connection, IndexInfo]:
-    """Open ``path`` read-only and check its format version."""
+def open_index(path: Path, *, root: Path | None = None) -> tuple[sqlite3.Connection, IndexInfo]:
+    """Open ``path`` read-only and check its format version. ``root`` is the folder of an
+    index made from several libraries, which lives elsewhere."""
     path = Path(path).resolve()
     if not path.is_file():
         raise ExamIndexError(f"no exam index at {path}; run `studybuddy build-exam` first")
@@ -232,4 +301,12 @@ def open_index(path: Path) -> tuple[sqlite3.Connection, IndexInfo]:
             f"{path} has index format {version}, this app reads format {FORMAT_VERSION}; "
             "rebuild it with `studybuddy build-exam` from the same studybuddy version"
         )
-    return conn, IndexInfo(path, meta)
+    return conn, IndexInfo(path, meta, root)
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        while block := f.read(1 << 20):
+            digest.update(block)
+    return digest.hexdigest()
