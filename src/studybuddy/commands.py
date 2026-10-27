@@ -1,4 +1,5 @@
-"""Library commands (plan §9): ``library init``, ``course add|list``, ``add``, ``notes`` and ``status``.
+"""Library commands (plan §9): ``library init``, ``course add|list``, ``add``, ``notes``, ``status``,
+``build-exam``, ``session`` and ``serve``.
 
 Results go to stdout, one line per item; progress and messages go to stderr through the
 CLI's display.
@@ -20,13 +21,15 @@ from studybuddy.enrich.backends import EnrichmentError
 from studybuddy.ingest.add import KINDS, AddOptions, AddResult, add_file, files_in, natural_key
 from studybuddy.ingest.convert import Converter
 from studybuddy.ingest.model import IngestError
-from studybuddy.library import Course, Library, LibraryError
+from studybuddy.library import SESSION_DIR, Course, Library, LibraryError
 from studybuddy.transcription import format_clock
 
 if TYPE_CHECKING:
     from studybuddy.cli import _Display
 
 log = logging.getLogger(__name__)
+
+SERVE_FOLDER = Path("~/StudyBuddy")  # where `studybuddy serve` looks for libraries by default
 
 
 def library_init(args: argparse.Namespace, display: _Display) -> int:
@@ -160,7 +163,17 @@ def notes(args: argparse.Namespace, display: _Display) -> int:
         if not courses:
             raise LibraryError("no courses yet: studybuddy course add SLUG --title \"Course title\"")
         ok = _write_notes(library, courses, display, redo=args.redo) and ok
+        _update_exam_index(library)
     return 0 if ok else 1
+
+
+def _update_exam_index(library: Library) -> None:
+    """Rebuild the exam index, if there is one, so the exam app shows the notes just written."""
+    if not exam_export.exam_index_outdated(library):
+        return
+    built = exam_export.build_exam(library)
+    log.info("Exam index updated: study notes for %s; restart studybuddy-exam to see them",
+             _plural(built.notes, "lecture"))
 
 
 def session_command(args: argparse.Namespace, display: _Display) -> int:
@@ -176,14 +189,15 @@ def session_command(args: argparse.Namespace, display: _Display) -> int:
     options = AddOptions(mode=args.mode, ocr=False if args.no_ocr else None,
                          convert=False if args.no_convert else None)
     failed, _ = _add_files(library, course, files, options, display)
+    if _notes_wanted(library, args):
+        _write_notes(library, [course], display)
 
     built = exam_export.build_exam(library)
-    log.info("Exam index: %s, %s", _plural(built.sources, "file"), _plural(built.passages, "passage"))
+    log.info("Exam index: %s, %s%s", _plural(built.sources, "file"), _plural(built.passages, "passage"),
+             f", study notes for {_plural(built.notes, 'lecture')}" if built.notes else "")
     if not built.passages:
         log.error("nothing searchable was found")
         return 1
-    if _notes_wanted(library, args):
-        _write_notes(library, [course], display)
     reopen = f"studybuddy-exam {shlex.quote(str(folder))}"
     if args.no_search:
         log.info("Search it with: %s", reopen)
@@ -193,13 +207,65 @@ def session_command(args: argparse.Namespace, display: _Display) -> int:
         log.warning("the exam app is not installed (see the README); then search with: %s", reopen)
         return 1 if failed else 0
     log.info("Opening the search page (Ctrl-C to stop). Later, reopen it with: %s", reopen)
+    _open_exam_app(app, folder, display, port=args.port)
+    return 0  # not reached
+
+
+def serve(args: argparse.Namespace, display: _Display) -> int:
+    folder = (args.folder or SERVE_FOLDER).expanduser().absolute()
+    if not folder.is_dir():
+        raise LibraryError(f"{folder} is not a folder")
+    roots = exam_export.libraries_in(folder)
+    if not roots:
+        raise LibraryError(f"no StudyBuddy libraries in {folder}; create one with: studybuddy library init "
+                           f"{shlex.quote(str(folder / 'fall-2026'))}")
+    searchable = 0
+    for root in roots:
+        where = _where(root, folder)
+        try:
+            state, built = exam_export.refresh_exam_index(Library(root))
+        except LibraryError as exc:
+            log.warning("%s: %s; left out", where, exc)
+            continue
+        if state == "empty":
+            log.info("%s: nothing to search yet", where)
+            continue
+        searchable += 1
+        if built is None:
+            log.info("%s: exam index up to date", where)
+        else:
+            log.info("%s: exam index updated: %s, %s%s", where, _plural(built.sources, "file"),
+                     _plural(built.passages, "passage"),
+                     f", study notes for {_plural(built.notes, 'lecture')}" if built.notes else "")
+    if not searchable:
+        raise LibraryError(f"nothing to search in {folder} yet: add videos and documents with "
+                           "`studybuddy add` or `studybuddy session`")
+    app = session.exam_app()
+    if app is None:
+        raise LibraryError("the exam app is not installed (see Exam day in the README)")
+    log.info("Opening the search page (Ctrl-C to stop). Without updating the indexes, reopen it with: "
+             "studybuddy-exam %s", shlex.quote(str(folder)))
+    _open_exam_app(app, folder, display, port=args.port, browser=not args.no_browser)
+    return 0  # not reached
+
+
+def _where(root: Path, folder: Path) -> str:
+    """A library's folder as the person knows it, relative to ``folder``: "Term 5/Async 3"."""
+    shown = root.parent if root.name == SESSION_DIR else root
+    try:
+        relative = shown.relative_to(folder)
+    except ValueError:
+        return str(shown)
+    return relative.as_posix() if relative.parts else shown.name
+
+
+def _open_exam_app(app: Path, folder: Path, display: _Display, *, port: int | None, browser: bool = True) -> None:
+    """Replace this process, which has the AI libraries loaded, with the AI-free exam app."""
     display.close()
     sys.stdout.flush()
     sys.stderr.flush()
-    # Replace this process, which has the AI libraries loaded, with the AI-free exam app.
-    command = [str(app), str(folder)] + (["--port", str(args.port)] if args.port else [])
+    command = [str(app), str(folder)] + (["--port", str(port)] if port else []) + ([] if browser else ["--no-browser"])
     os.execv(command[0], command)
-    return 0  # not reached
 
 
 def build_exam(args: argparse.Namespace, display: _Display) -> int:
@@ -208,9 +274,9 @@ def build_exam(args: argparse.Namespace, display: _Display) -> int:
     built = exam_export.build_exam(library)
     print(built.path)
     log.info(
-        "%s, %s, %s; %.1f MB; SHA-256 %s",
+        "%s, %s, %s, study notes for %s; %.1f MB; SHA-256 %s",
         _plural(built.courses, "course"), _plural(built.sources, "file"), _plural(built.passages, "passage"),
-        built.size_bytes / 1e6, built.sha256[:16],
+        _plural(built.notes, "lecture"), built.size_bytes / 1e6, built.sha256[:16],
     )
     if built.without_view:
         log.warning("%s have no video or PDF to open (text only)", _plural(built.without_view, "file"))
@@ -296,8 +362,12 @@ def _plural(count: int, noun: str) -> str:
     return f"{count} {noun}{'' if count == 1 else 's'}"
 
 
-def register(commands: argparse._SubParsersAction, common: argparse.ArgumentParser) -> None:
-    """Add the library commands to the CLI's subcommand list (subparsers inherit its parser class)."""
+def register(commands: argparse._SubParsersAction, common: argparse.ArgumentParser,
+             chatter: argparse.ArgumentParser) -> None:
+    """Add the library commands to the CLI's subcommand list (subparsers inherit its parser class).
+
+    ``common`` has ``--library`` and the -v/-q options, ``chatter`` only the -v/-q options.
+    """
     lib = commands.add_parser("library", help="create a semester library")
     lib_cmds = lib.add_subparsers(dest="library_command", metavar="COMMAND", required=True)
     init = lib_cmds.add_parser("init", parents=[common], help="create a new library folder",
@@ -386,6 +456,21 @@ def register(commands: argparse._SubParsersAction, common: argparse.ArgumentPars
     ses.add_argument("--no-search", action="store_true", help="only process the files; do not open the search page")
     ses.add_argument("--port", type=int, help="port for the search page (default 8765)")
     ses.set_defaults(run=session_command)
+
+    sv = commands.add_parser(
+        "serve", parents=[chatter], help="search every library in ~/StudyBuddy from one page",
+        description=(
+            "Find every library and session folder in FOLDER (default: ~/StudyBuddy) and in its subfolders, "
+            "bring their exam indexes up to date, then open one search page for all of them, with their study "
+            "notes. Links to folders are followed, so a link to a folder kept elsewhere (in OneDrive, say) "
+            "brings its sessions in too. Nothing here uses AI: the page runs in the AI-free exam app."
+        ),
+    )
+    sv.add_argument("folder", type=Path, nargs="?", metavar="FOLDER",
+                    help="folder holding libraries and session folders (default: ~/StudyBuddy)")
+    sv.add_argument("--port", type=int, help="port for the search page (default 8765)")
+    sv.add_argument("--no-browser", action="store_true", help="do not open a browser window")
+    sv.set_defaults(run=serve)
 
     s = commands.add_parser("status", parents=[common], help="show what is in the library")
     s.add_argument("course", nargs="?", metavar="COURSE", help="list the files of one course")

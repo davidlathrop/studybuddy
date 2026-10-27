@@ -95,6 +95,9 @@ def test_every_response_is_locked_down(client: TestClient) -> None:
         assert headers["x-content-type-options"] == "nosniff"
     assert "default-src 'self'" in CSP and "http" not in CSP
     assert client.get("/api/status").headers["cache-control"] == "no-store"
+    for path in ("/", "/static/app.js", "/static/app.css"):  # an updated app is never mixed with an old script
+        assert client.get(path).headers["cache-control"] == "no-cache", path
+    assert "cache-control" not in client.get("/files/10").headers
 
 
 def test_foreign_host_names_are_refused(client: TestClient) -> None:

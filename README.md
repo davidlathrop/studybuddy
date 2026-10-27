@@ -62,8 +62,12 @@ studybuddy session ~/Videos/econ-workshop-oct-15
 - **Study notes.** It writes study notes for every video into a `Study notes` folder next
   to the videos: one file per video, plus `index.md` for the sitting. See
   [Study notes](#study-notes).
-- **Then the search page.** It builds the exam index and opens the search page. Reopen
-  the search later with `exam/.venv/bin/studybuddy-exam ~/Videos/econ-workshop-oct-15`.
+- **Then the search page.** It builds the exam index and opens the search page. Click
+  **Study notes** there to read the sitting's notes. Reopen the search later with
+  `exam/.venv/bin/studybuddy-exam ~/Videos/econ-workshop-oct-15`.
+- **Several sittings together.** Keep the sitting folders in `~/StudyBuddy`, or link to
+  them from there, and `studybuddy serve` searches them all from one page (see
+  [Exam day](#exam-day-searching-the-library)).
 - **Options:**
   - `--title` names the sitting.
   - `--mode fast` transcribes about 3× faster.
@@ -160,6 +164,11 @@ studybuddy notes lecture.json     # a transcript outside any library -> lecture.
   the transcripts are still written and the videos still added, and the command doesn't fail
   because of it. studybuddy says which notes are missing and which command writes them
   later. Ctrl-C keeps the notes already written.
+- **In the search page.** `studybuddy build-exam` puts the notes in the exam index, and
+  `studybuddy notes` updates an index that is already there. In the search page, click
+  **Study notes** to see a course's lectures, announcements and glossary. Open a lecture's
+  notes and click any time to play the lecture from there, with the transcript below. See
+  [Exam day](#exam-day-searching-the-library).
 - **For a single file:** `studybuddy transcribe lecture.mp4` writes `lecture.notes.md` next to
   the transcript. It also keeps `lecture.json`, even if you didn't ask for that format,
   because the notes are made from it: if they fail, `studybuddy notes lecture.json` redoes
@@ -172,10 +181,22 @@ Only four packages are installed there (a web server, fuzzy string matching and 
 code; listed in [exam/requirements.lock](exam/requirements.lock)) and no AI library at all.
 
 ```sh
+studybuddy serve                              # every library in ~/StudyBuddy, in one page
 studybuddy build-exam                         # after adding files: refresh the exam index
+                                              # (studybuddy status says when it is out of date)
 exam/.venv/bin/studybuddy-exam                # opens the search page in Chrome
 exam/.venv/bin/studybuddy-exam ~/StudyBuddy/fall-2026 --port 8765 --no-browser
 ```
+
+- **Everything in ~/StudyBuddy at once:** `studybuddy serve` (or `studybuddy serve FOLDER`)
+  looks for libraries and session folders in `~/StudyBuddy` and its subfolders.
+  - It rebuilds any exam index that is missing or out of date, then opens one search page
+    for all of them, study notes included.
+  - The course list groups the courses by library.
+  - It follows links to folders, so a link brings in session folders kept elsewhere, such as
+    in OneDrive: `ln -s ~/Library/CloudStorage/OneDrive-…/"Term 5" ~/StudyBuddy/`.
+  - `exam/.venv/bin/studybuddy-exam ~/StudyBuddy` opens the same page without rebuilding
+    anything, as on exam day.
 
 - **What it does:** search every course at once or filter by course, kind of file and week.
   Results are ranked so passages containing all your words come first. Misspellings get a
@@ -183,12 +204,26 @@ exam/.venv/bin/studybuddy-exam ~/StudyBuddy/fall-2026 --port 8765 --no-browser
 - **Where results go:** a video result plays the exam copy from that moment. A slide, PDF or
   Word result opens the bundled PDF viewer at that slide or page with your words
   highlighted. Results without a PDF show their text.
+- **Study notes:** click **Study notes** next to the course list (or choose a course with the
+  search box empty) to read a course's study notes.
+  - The course page lists the lectures in order, each with its overview. It also shows
+    the course's announcements and an A–Z glossary of key terms, where each term links to
+    where it was explained.
+  - A lecture's page has its sections, key points, key terms, examples, and review
+    questions (click one to show its answer).
+  - Every point has its time in the margin. Clicking the time plays the lecture from there
+    and shows that part of the transcript below the video, so you can check the notes
+    against what was said.
+  - The notes are labelled as written by AI before the exam. They are shown but not
+    searched: search results come from the original material only.
+  - Typing a search shows results; clearing it brings the notes back. The browser's Back
+    button steps back through the pages of notes.
 - **How "no AI" is enforced and shown:**
   - The first thing the program does is install a Python audit hook. From then on, importing
     any AI or machine-learning library (or the studybuddy builder) is refused.
   - Any network connection or name lookup that isn't to this computer is refused too.
   - The page's status line shows "No AI · Offline", the index's fingerprint and when it was
-    built.
+    built. With several libraries, hovering over it lists each library's index fingerprint.
   - The page itself may load only files from this computer (Content-Security-Policy), and the
     server listens on 127.0.0.1 only.
   - Keep Wi-Fi off as well. Native code making raw system calls could bypass an audit hook.
@@ -372,7 +407,7 @@ tests need both.
 ```
 src/studybuddy/
   cli.py          # the command line: transcribe, plus the library commands from commands.py
-  commands.py     # library init, course add|list, add, notes, status
+  commands.py     # library init, course add|list, add, notes, status, build-exam, session, serve
   library.py      # the library folder, library.toml settings, the build database
   transcription.py # one file -> MP3 + transcript (shared by transcribe and add)
   audio.py        # ffprobe checks, MP3 extraction, exam copies, decoding to 16 kHz
@@ -384,14 +419,17 @@ src/studybuddy/
   enrich/         # AI enrichment backends, schemas and prompts (exam-search plan §6);
                   # notes.py writes, checks and renders study notes
   study_notes.py  # notes: which videos need notes, the run record, the Markdown files
-  exam_export.py  # build-exam: library -> exam/exam.sqlite
+  exam_export.py  # build-exam: library (and its study notes) -> exam/exam.sqlite
 exam/             # studybuddy-exam: the separate, AI-free exam app
   src/studybuddy_exam/
     __main__.py   # installs the guard first, then starts the server on 127.0.0.1
     guard.py      # the audit hook: no AI imports, loopback-only network
     index_format.py # exam.sqlite layout, building and opening (FTS5 + trigram + vocabulary)
+    locate.py     # finding the library, or every library in a folder
+    collection.py # several libraries' indexes combined into one search
     query.py      # safe query building, stopwords
     search.py     # ranking tiers, filters, snippets, "did you mean"
+    notes.py      # the study notes pages: a course's lectures and glossary, one lecture
     server.py     # Starlette app: page, JSON API, files with Range, CSP
     static/       # the search page and the bundled PDF.js viewer
   tests/

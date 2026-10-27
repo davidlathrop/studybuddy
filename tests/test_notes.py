@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 
 from fakes import FakeClaude, Models
-from studybuddy import cli, study_notes, transcribe
+from studybuddy import cli, exam_export, study_notes, transcribe
 from studybuddy.enrich import load_prompt
 from studybuddy.enrich.backends import EnrichmentError, UsageLimitError, make_backend, model_id
 from studybuddy.enrich.notes import (
@@ -33,6 +33,8 @@ from studybuddy.enrich.notes import (
 from studybuddy.enrich.passages import Passage
 from studybuddy.enrich.schemas import KeyTerm, NotesOutline, NotesSectionPlan, NotesWindow, strict_json_schema
 from studybuddy.library import DB_PATH, SESSION_DIR, Library
+from studybuddy_exam import notes as exam_notes
+from studybuddy_exam.index_format import open_index
 
 TEXTS = [
     "Glycolysis splits glucose into two molecules of pyruvate in the cytoplasm.",
@@ -405,6 +407,104 @@ def test_an_older_library_is_upgraded(tmp_path: Path) -> None:
         assert {"run", "notes"} <= tables and db.execute("PRAGMA user_version").fetchone()[0] == 2
 
 
+# --------------------------------------------------------------------------- in the exam index
+
+
+def passage_ids(library: Library, source_id: int) -> list[int]:
+    with library.db() as db:
+        return [r[0] for r in db.execute("SELECT id FROM passage WHERE source_id = ? ORDER BY ord", (source_id,))]
+
+
+def test_notes_go_into_the_exam_index_with_its_passage_ids(library: Library, fake_claude: FakeClaude) -> None:
+    other = add_video(library, "Lecture 3", TEXTS[:1], week=4)  # so the ids of Lecture 4 don't start at 1
+    source_id = add_video(library, "Lecture 4", week=5)
+    study_notes.update_notes(library, [library.course("bio101")])
+    built = exam_export.build_exam(library)
+    assert built.notes == 2
+
+    conn, info = open_index(built.path)
+    assert info.meta["notes"] == "2"
+    row = conn.execute("SELECT * FROM notes WHERE source_id = ?", (source_id,)).fetchone()
+    assert (row["position"], row["title"], row["model"]) == (2, "Notes title", "claude-opus-5-5")
+    data = json.loads(row["data"])
+    ids = passage_ids(library, source_id)
+    assert data["overview"] == "What the lecture covers."
+    assert data["announcements"] == [{"text": "The quiz is on Friday.", "passage_id": ids[0], "t_ms": 0}]
+    second = data["sections"][1]
+    assert (second["title"], second["passage_id"], second["t_ms"], second["end_ms"]) == ("Topic 2", ids[1], 60_000,
+                                                                                         120_000)
+    assert second["key_points"] == [{"text": "Point 2.", "details": ["A detail."], "passage_id": ids[1],
+                                     "t_ms": 60_000}]
+    assert second["key_terms"][0] == {"term": "Term 2", "definition": "What it means.", "quote": "The Krebs",
+                                      "passage_id": ids[1], "t_ms": 60_000}
+    assert second["review_questions"][0]["answer"] == "Answer 2."
+
+    # what the exam app makes of it
+    course = exam_notes.course_notes(conn, "bio101")
+    assert [lecture["source_id"] for lecture in course["lectures"]] == [other, source_id]  # lecture order
+    assert exam_notes.lecture_notes(conn, source_id)["previous_id"] == other
+
+
+def test_a_passage_the_notes_cannot_point_at(library: Library, fake_claude: FakeClaude) -> None:
+    source_id = add_video(library, "Lecture 4")
+    study_notes.update_notes(library, [library.course("bio101")])
+    with library.db() as db:  # a model that cited P9 of a three-passage lecture
+        data = json.loads(db.execute("SELECT data FROM notes").fetchone()[0])
+        data["announcements"][0]["passage_id"] = 9
+        db.execute("UPDATE notes SET data = ?", (json.dumps(data),))
+    conn, _ = open_index(exam_export.build_exam(library).path)
+    stored = json.loads(conn.execute("SELECT data FROM notes WHERE source_id = ?", (source_id,)).fetchone()[0])
+    assert stored["announcements"] == [{"text": "The quiz is on Friday.", "passage_id": None, "t_ms": None}]
+
+
+def test_notes_for_an_older_transcript_are_left_out(library: Library, fake_claude: FakeClaude,
+                                                    caplog: pytest.LogCaptureFixture) -> None:
+    source_id = add_video(library, "Lecture 4")
+    study_notes.update_notes(library, [library.course("bio101")])
+    with library.db() as db:
+        db.execute("UPDATE passage SET text = 'Corrected text.' WHERE source_id = ? AND ord = 1", (source_id,))
+    assert exam_export.build_exam(library).notes == 0
+    assert "Lecture 4: its study notes are for an older transcript and are left out; update them with: " \
+           "studybuddy notes bio101" in caplog.text
+
+
+def test_the_exam_index_is_out_of_date_after_new_notes(library: Library, fake_claude: FakeClaude) -> None:
+    add_video(library, "Lecture 4")
+    exam_export.build_exam(library)
+    assert not exam_export.exam_index_outdated(library)
+    study_notes.update_notes(library, [library.course("bio101")])
+    assert exam_export.exam_index_outdated(library)
+    assert "out of date" in exam_export.exam_index_state(library)
+    exam_export.build_exam(library)
+    assert "3 passages, study notes for 1 lecture, up to date" in exam_export.exam_index_state(library)
+
+
+def test_an_index_for_an_older_exam_app_must_be_rebuilt(library: Library) -> None:
+    add_video(library, "Lecture 4")
+    path = exam_export.build_exam(library).path
+    conn = sqlite3.connect(path)
+    conn.execute("UPDATE meta SET value = '1' WHERE key = 'format_version'")
+    conn.commit()
+    conn.close()
+    assert exam_export.exam_index_outdated(library)
+    assert "for an older exam app; rebuild it (studybuddy build-exam)" in exam_export.exam_index_state(library)
+
+
+def test_the_notes_command_updates_an_existing_exam_index(library: Library, fake_claude: FakeClaude,
+                                                          capsys: pytest.CaptureFixture) -> None:
+    add_video(library, "Lecture 4")
+    assert run_notes(library) == 0
+    assert not exam_export.index_path(library).exists()  # no index yet: none is made
+    path = exam_export.build_exam(library).path
+    assert run_notes(library, "--redo") == 0
+    assert "Exam index updated: study notes for 1 lecture; restart studybuddy-exam to see them" \
+           in capsys.readouterr().err
+    built_at = open_index(path)[1].meta["built_at"]
+    assert run_notes(library) == 0  # nothing new: the index is left alone
+    assert "Exam index updated" not in capsys.readouterr().err
+    assert open_index(path)[1].meta["built_at"] == built_at
+
+
 # --------------------------------------------------------------------------- after add and session
 
 
@@ -464,6 +564,8 @@ def test_session_writes_notes_next_to_the_videos(tmp_path: Path, lecture: Path, 
     notes = folder / "Study notes"
     assert str(notes / "Lecture 04.notes.md") in out.splitlines() and (notes / "index.md").is_file()
     assert "# in: study notes" in (notes / "index.md").read_text()
+    _, info = open_index(folder / SESSION_DIR / "exam" / "exam.sqlite")  # the search page shows them too
+    assert info.meta["notes"] == "1"
     assert study_notes.retry_command(Library(folder / SESSION_DIR), []) == f"studybuddy notes --library {folder.resolve()}"
 
 

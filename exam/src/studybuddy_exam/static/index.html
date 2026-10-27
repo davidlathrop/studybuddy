@@ -31,6 +31,7 @@
         <span class="field-label">Course</span>
         <select id="f-course"><option value="">All courses</option></select>
       </label>
+      <button type="button" id="notes-button" class="notes-button" aria-pressed="false" hidden>Study notes</button>
       <div class="kinds" role="group" aria-label="File types (none selected means all)">
         <button type="button" class="kind-toggle" data-kind="video" aria-pressed="false"><span class="flag" data-kind="video"></span>Videos</button>
         <button type="button" class="kind-toggle" data-kind="pptx" aria-pressed="false"><span class="flag" data-kind="pptx"></span>Slides</button>
@@ -65,6 +66,7 @@
         <div class="stage-empty" id="stage-empty">
           <p class="stage-lead">Choose a result to see it here.</p>
           <p>Videos start at the moment the words were said. Slides and pages open with your words highlighted.</p>
+          <p>Choose a course to read its study notes: each time in them plays the lecture from there.</p>
         </div>
 
         <div class="video-wrap" id="video-wrap" hidden>

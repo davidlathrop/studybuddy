@@ -196,7 +196,7 @@ select {
 #f-course { max-width: 16rem; }
 
 .kinds { display: inline-flex; gap: 0.35rem; }
-.kind-toggle {
+.kind-toggle, .notes-button {
   display: inline-flex; align-items: center; gap: 0.4rem;
   height: 2rem;
   padding: 0 0.7rem 0 0.55rem;
@@ -206,13 +206,16 @@ select {
   color: var(--ink-soft);
   cursor: pointer;
 }
-.kind-toggle:hover { border-color: var(--ink-faint); color: var(--ink); }
-.kind-toggle[aria-pressed="true"] {
+.kind-toggle:hover, .notes-button:hover { border-color: var(--ink-faint); color: var(--ink); }
+.kind-toggle[aria-pressed="true"], .notes-button[aria-pressed="true"] {
   border-color: var(--accent);
   background: var(--accent-wash);
   color: var(--accent);
   font-weight: 600;
 }
+
+.notes-button { padding: 0 0.7rem; color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--rule-strong)); }
+.notes-button[hidden] { display: none; }
 
 .text-button {
   border: 0; padding: 0.15rem 0; background: none;
@@ -358,6 +361,13 @@ mark {
 .note h2 { margin: 0 0 0.35rem; font: 600 1.15rem/1.3 var(--font-text); }
 .note p { margin: 0 0 0.6rem; color: var(--ink-soft); }
 .note ul { margin: 0.2rem 0 1rem; padding: 0; list-style: none; }
+.note .library-name {
+  margin: 1.1rem 0 0.2rem;
+  font: 600 0.78rem/1.3 var(--font-text);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
 .note li { padding: 0.45rem 0; border-top: 1px solid var(--rule); }
 .note li:last-child { border-bottom: 1px solid var(--rule); }
 .note .course-name { display: block; font-weight: 600; color: var(--ink); }
@@ -365,6 +375,187 @@ mark {
 .note .tips { color: var(--ink-soft); font-size: 0.9rem; }
 .note .tips p { margin: 0 0 0.35rem; }
 .note.error h2, .note .alert { color: var(--warn); }
+.note button.course-name {
+  border: 0; padding: 0; background: none;
+  text-align: left; cursor: pointer;
+}
+.note button.course-name:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 0.18em; }
+.note .course-notes { display: inline-block; margin-top: 0.15rem; font-size: 0.9rem; }
+
+/* ---------- Study notes ----------
+   The same booklet: times sit in the margin, the notes are set to the right of the rule.
+   The notes are AI-written, so each page carries the label and every time is a link back
+   to the lecture. */
+
+.notes { padding-bottom: 2.5rem; }
+.notes code {
+  font: 0.86em/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 0.05rem 0.3rem;
+  border-radius: 4px;
+  background: var(--stage);
+  color: var(--ink);
+}
+
+.notes-nav {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem 1rem;
+  padding: 0.75rem var(--pane-pad) 0 calc(var(--margin-w) + 0.9rem);
+  font-size: 0.9rem;
+}
+.notes-steps { display: inline-flex; gap: 0.35rem; margin-left: auto; }
+
+.notes-head { padding: 1.1rem var(--pane-pad) 0.5rem calc(var(--margin-w) + 0.9rem); max-width: 48rem; }
+.notes-nav + .notes-head { padding-top: 0.75rem; }
+.notes-head h2 { margin: 0 0 0.2rem; font: 600 1.3rem/1.25 var(--font-text); letter-spacing: -0.005em; }
+.notes-head h2:focus { outline: none; }
+.notes-facts { margin: 0 0 0.7rem; color: var(--ink-soft); font-size: 0.86rem; overflow-wrap: anywhere; }
+.notes-missing { margin: 0 0 0.6rem; color: var(--ink-soft); font-size: 0.9rem; }
+
+.ai-label {
+  margin: 0 0 0.8rem;
+  padding: 0.45rem 0.65rem;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 6px 6px 0;
+  background: var(--accent-wash);
+  color: var(--ink-soft);
+  font-size: 0.84rem;
+}
+.ai-tag {
+  display: inline-block;
+  margin-right: 0.45rem;
+  padding: 0 0.35rem;
+  border-radius: 4px;
+  background: var(--accent);
+  color: var(--sheet);
+  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.05em;
+  line-height: 1.5;
+}
+
+.note-text { margin: 0; font: 1rem/1.5 var(--font-text); color: var(--ink); overflow-wrap: anywhere; }
+.note-text.overview { font-size: 1.04rem; max-width: 70ch; }
+.note-text strong { font-weight: 600; }
+.note-source { display: block; margin-top: 0.1rem; color: var(--ink-soft); font-size: 0.82rem; }
+
+.notes-block, .notes-section { border-top: 1px solid var(--rule); padding: 0.8rem 0 0.45rem; scroll-margin-top: 0.25rem; }
+.notes-label {
+  margin: 0.55rem 0 0.15rem;
+  padding: 0 var(--pane-pad) 0 calc(var(--margin-w) + 0.9rem);
+  font: 600 0.74rem/1.3 var(--font-ui);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.notes-block > .notes-label:first-child { margin-top: 0; }
+
+.note-rows { list-style: none; margin: 0; padding: 0; }
+.note-row {
+  display: grid;
+  grid-template-columns: var(--margin-w) minmax(0, 1fr);
+  align-items: baseline;
+  padding: 0.28rem 0;
+}
+.note-row > .where {
+  padding: 0 0.85rem 0 0.5rem;
+  text-align: right;
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.note-row > .body { padding: 0 var(--pane-pad) 0 0.9rem; min-width: 0; max-width: calc(70ch + var(--pane-pad) + 0.9rem); }
+.note-row .text-button { text-align: left; font: 1rem/1.45 var(--font-text); }
+
+.time-link {
+  margin: -0.05rem -0.3rem;
+  padding: 0.05rem 0.3rem;
+  border: 0; border-radius: 4px;
+  background: none;
+  color: var(--accent);
+  font: inherit; font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  text-underline-offset: 0.2em;
+}
+.time-link:hover { background: var(--accent-wash); text-decoration-color: currentColor; }
+.time-link.is-open { background: var(--accent); color: var(--sheet); text-decoration: none; font-weight: 600; }
+
+.section-title { margin: 0 0 0.2rem; font: 600 1.08rem/1.3 var(--font-text); }
+.section-title > .where { font: 0.82rem/1.3 var(--font-ui); }
+.section-summary { padding: 0 var(--pane-pad) 0.15rem calc(var(--margin-w) + 0.9rem); max-width: calc(70ch + var(--margin-w) + 2rem); }
+
+.note-details {
+  margin: 0.15rem 0 0.1rem;
+  padding-left: 1.1rem;
+  font: 0.95rem/1.45 var(--font-text);
+  color: var(--ink-soft);
+}
+.note-quote {
+  margin: 0.25rem 0 0.1rem;
+  padding-left: 0.7rem;
+  border-left: 2px solid var(--rule-strong);
+  font: italic 0.95rem/1.45 var(--font-text);
+  color: var(--ink-soft);
+}
+.question summary { cursor: pointer; font: 1rem/1.5 var(--font-text); }
+.question summary:hover { color: var(--accent); }
+.question .answer { margin: 0.25rem 0 0.2rem; font: 0.98rem/1.5 var(--font-text); color: var(--ink-soft); }
+
+.lecture-list { list-style: none; margin: 0; padding: 0; }
+.lecture-list li + li { border-top: 1px solid var(--rule); }
+.lecture {
+  display: grid;
+  grid-template-columns: var(--margin-w) minmax(0, 1fr);
+  width: 100%;
+  margin: 0;
+  padding: 0.6rem 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+.lecture:hover { background: color-mix(in srgb, var(--accent-wash) 55%, transparent); }
+.lecture:focus-visible { outline-offset: -2px; }
+.lecture .where {
+  padding: 0.15rem 0.85rem 0 0.5rem;
+  text-align: right;
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+.lecture .body { display: block; min-width: 0; padding: 0 var(--pane-pad) 0 0.9rem; }
+.lecture-title { display: block; font: 600 1.02rem/1.3 var(--font-text); color: var(--ink); overflow-wrap: anywhere; }
+.lecture:hover .lecture-title { color: var(--accent); }
+.lecture-meta { display: block; margin-top: 0.1rem; color: var(--ink-soft); font-size: 0.82rem; overflow-wrap: anywhere; }
+.lecture-overview {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin-top: 0.3rem;
+  font: 0.95rem/1.45 var(--font-text);
+  color: var(--ink-soft);
+}
+
+.letters {
+  display: flex; flex-wrap: wrap; gap: 0.2rem;
+  padding: 0.15rem var(--pane-pad) 0.45rem calc(var(--margin-w) + 0.9rem);
+}
+.letter-jump {
+  min-width: 1.75rem; height: 1.75rem;
+  padding: 0 0.3rem;
+  border: 1px solid var(--rule-strong);
+  border-radius: 4px;
+  background: var(--sheet);
+  color: var(--ink-soft);
+  font-size: 0.8rem; font-weight: 600;
+  cursor: pointer;
+}
+.letter-jump:hover { border-color: var(--accent); color: var(--accent); }
+.letter-group { padding: 0.35rem 0; border-top: 1px solid var(--rule); scroll-margin-top: 0.25rem; }
+.letter-group > .letter { font: 600 1.25rem/1.2 var(--font-text); color: var(--ink-faint); }
+.terms { list-style: none; margin: 0; }
+.terms > li { padding: 0.2rem 0 0.35rem; }
+.places { display: flex; flex-wrap: wrap; gap: 0.1rem 0.9rem; margin-top: 0.1rem; color: var(--ink-soft); font-size: 0.82rem; }
 
 /* ---------- Viewer ---------- */
 
