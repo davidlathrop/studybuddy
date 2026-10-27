@@ -68,7 +68,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="library folder (default: $STUDYBUDDY_LIBRARY, the folder you are in, or the default library)",
     )
     _add_chatter(common)
-    commands.register(subcommands, common)
+    chatter = _Parser(add_help=False)
+    _add_chatter(chatter)
+    commands.register(subcommands, common, chatter)
 
     cmd = subcommands.add_parser(
         "transcribe",

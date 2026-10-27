@@ -165,6 +165,30 @@ def retry_command(library: Library, courses: Sequence[Course]) -> str:
     return command
 
 
+@dataclass(frozen=True)
+class LectureNotes:
+    source_id: int
+    notes: StudyNotes
+    model: str
+    written_at: str
+
+
+def current_notes(library: Library, course: Course) -> list[LectureNotes]:
+    """The course's notes that match their video's transcript, in lecture order (for the exam index)."""
+    found = []
+    for video in _videos(library, course):
+        stored = _stored(library, video.id)
+        if stored is None:
+            continue
+        if stored["input_sha"] != input_sha(video.title, _passages(library, video.id)):
+            log.warning("%s: its study notes are for an older transcript and are left out; update them with: %s",
+                        video.title, retry_command(library, [course]))
+            continue
+        found.append(LectureNotes(video.id, StudyNotes.model_validate_json(stored["data"]), stored["model_id"],
+                                  stored["created_at"]))
+    return found
+
+
 def videos_without_notes(library: Library, course: Course) -> int:
     with library.db() as db:
         return db.execute(

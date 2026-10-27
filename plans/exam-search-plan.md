@@ -1,6 +1,6 @@
 # Exam Search: Implementation Plan
 
-_Status: E0 (enrichment pilot), E1 (library and ingestion) and E2 (AI-free exam app) done 2026-10-14; see [e0-results.md](e0-results.md). Study notes (§6.8), built on the E0 backends, added 2026-10-22. E3 onwards not started._
+_Status: E0 (enrichment pilot), E1 (library and ingestion) and E2 (AI-free exam app) done 2026-10-14; see [e0-results.md](e0-results.md). Study notes (§6.8), built on the E0 backends, added 2026-10-22; shown in the exam app 2026-10-26. Every library in a folder searched as one (`studybuddy serve`) 2026-10-27. E3 onwards not started._
 _Builds on the transcription pipeline in [mp4-transcription-plan.md](mp4-transcription-plan.md), which is implemented on branch `feature/mp4-transcription`._
 
 ## 1. Goal and hard constraints
@@ -278,13 +278,18 @@ open-notes material). This step is separate from the search enrichment above.
   - With `studybuddy notes [COURSE...] [--redo]`.
   - Turned off with `--no-notes` or `[notes] auto = false`.
 - **Measured.** On the synthetic 10-minute transcript, Opus 5.5 through `claude -p` took 75 s for 2 calls, and every key-term quote verified.
-- **Not exported to `exam.sqlite`.** If the notes should become searchable on exam day, they need the C5 labelling, like other AI text.
+- **In the exam app (added 2026-10-26).** `build-exam` exports the notes whose `input_sha` still matches the transcript into a `notes` table (index format 2), with every passage number replaced by the exam passage's id and start time.
+  - Choosing a course with an empty search box shows the course page: its lectures in order with overviews, the announcements, and an A–Z glossary merged across lectures (§7.3).
+  - A lecture's page shows its sections. Every point's time sits in the margin and plays the lecture from there, with that passage of the transcript below (C4).
+  - Each page is labelled as AI-written (C5). The notes are browsed only and not indexed for search, so results stay original text.
+  - `studybuddy notes` rebuilds an existing index. `status` reports an index that is out of date, using the newest notes run, or that was built for an older format.
 
 ## 7. Exam-time search (no AI)
 
 ### 7.1 Building `exam.sqlite` (`studybuddy build-exam`, deterministic)
 
 - Copy the active, verified rows from `library.sqlite`.
+- Copy the study notes that match their transcripts into `notes`, for browsing only (§6.8).
 - **Full-text search tables** (SQLite FTS5 with external content, built once, no triggers):
   - `passage_fts(text, aliases, questions, context)` with `tokenize='porter unicode61'`;
   - `passage_tri(text)` with `tokenize='trigram'`, a fallback for partial words;
@@ -315,8 +320,8 @@ open-notes material). This step is separate from the search enrichment above.
 ### 7.3 Browsing
 
 - **Concept page:** the definition as the original quote plus its source link, the AI gloss labelled, aliases, relations with evidence links, and every mention with its timestamp or page.
-- **Lecture outline:** chapters with timestamps.
-- **Glossary:** an A–Z list for each course.
+- **Lecture outline:** chapters with timestamps. The study notes' sections provide this now (§6.8).
+- **Glossary:** an A–Z list for each course. The study notes' key terms provide this now (§6.8).
 - **Course map:** a Cytoscape.js graph using the precomputed positions.
 - **Filters:** course, week or date range, and source type.
 
@@ -343,6 +348,11 @@ open-notes material). This step is separate from the search enrichment above.
      - an import-linter rule forbidding `studybuddy_exam` from importing `studybuddy`;
      - a subprocess check of `sys.modules` after startup.
 - **Launch:** `studybuddy-exam ~/StudyBuddy/fall-2026` opens the browser at `http://127.0.0.1:8765`.
+- **Several libraries (added 2026-10-27):** `studybuddy-exam ~/StudyBuddy` searches every library and session folder in that folder.
+  - Each library keeps its own `exam.sqlite`. At startup the exam app copies them into one index in a temporary folder, with new ids. Libraries without an index, or with an index in an older format, are left out with a message.
+  - Format 3 of the index added a `library` table: every course belongs to a library, and the files are served from that library's folder.
+  - The course list groups the courses by library. The status line's tooltip lists each library's index fingerprint, since those are the hand-off files.
+  - `studybuddy serve [FOLDER]` (default `~/StudyBuddy`) first rebuilds every index that is missing or out of date, then starts the exam app on the folder in place of itself.
 
 ## 9. Project layout and commands
 
@@ -371,6 +381,7 @@ studybuddy build-exam
 studybuddy status                   # what's ingested, enriched, exported; cost so far
 studybuddy sync push|pull           # optional (E7): back up / restore the library via S3
 studybuddy-exam ~/StudyBuddy/fall-2026
+studybuddy serve [~/StudyBuddy]     # every library in the folder: update the indexes, then search them all
 ```
 
 ## 10. Milestones

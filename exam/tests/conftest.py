@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
-from studybuddy_exam.index_format import CourseRow, PassageRow, SourceRow, build
+from studybuddy_exam.index_format import CourseRow, NotesRow, PassageRow, SourceRow, build
 
 COURSES = [CourseRow(1, "bio101", "Biology 101"), CourseRow(2, "econ201", "Applied Microeconomics")]
 SOURCES = [
@@ -61,3 +62,57 @@ def library(tmp_path_factory: pytest.TempPathFactory) -> Path:
 @pytest.fixture(scope="session")
 def index_file(library: Path) -> Path:
     return library / "exam" / "exam.sqlite"
+
+
+# Study notes for the Lecture 4 video and a second lecture, as the builder exports them.
+LECTURE_5 = SourceRow(14, 1, "video", "Lecture 5: Photosynthesis", 5, None, "courses/bio101/videos/l5.exam.mp4",
+                      600.0, None)
+LECTURE_5_PASSAGE = _p(12, 14, 1, "Stomata open to let carbon dioxide in.", t_start_ms=0, t_end_ms=60_000,
+                       origin="speech")
+
+
+def _section(title: str, passage_id: int | None, t_ms: int | None, **lists: list) -> dict:
+    empty = {key: [] for key in ("key_points", "key_terms", "examples", "emphasis", "review_questions")}
+    return {"title": title, "summary": f"About {title.lower()}.", "passage_id": passage_id, "t_ms": t_ms,
+            "end_ms": (t_ms or 0) + 120_000, **empty, **lists}
+
+
+def _term(term: str, passage_id: int | None, t_ms: int | None, quote: str = "") -> dict:
+    return {"term": term, "definition": f"The meaning of {term}.", "quote": quote, "passage_id": passage_id,
+            "t_ms": t_ms}
+
+
+LECTURE_4_NOTES = {
+    "overview": "How cells turn glucose into ATP.",
+    "announcements": [{"text": "The midterm is on October 20.", "passage_id": 5, "t_ms": 240_000}],
+    "sections": [
+        _section(
+            "The Krebs cycle", 1, 0,
+            key_points=[{"text": "Mitochondria make ATP.", "details": ["Through the Krebs cycle."], "passage_id": 1,
+                         "t_ms": 0}],
+            key_terms=[_term("Krebs cycle", 1, 0, quote="the Krebs cycle")],
+            review_questions=[{"question": "Where does the Krebs cycle run?", "answer": "In the matrix.",
+                               "passage_id": 4, "t_ms": 180_000}],
+        ),
+        _section("More on the cycle", 4, 180_000,
+                 key_terms=[_term("krebs Cycle!", 4, 180_000), _term("ATP", None, None)]),
+    ],
+}
+LECTURE_5_NOTES = {
+    "overview": "How leaves take in carbon dioxide.",
+    "announcements": [],
+    "sections": [_section("Stomata", 12, 0, key_terms=[_term("Stomata", 12, 0), _term("3-phosphoglycerate", 12, 0)])],
+}
+NOTES = [
+    NotesRow(10, 1, "Cellular respiration", "claude-opus-5-5", "2026-10-22T10:00:00+00:00",
+             json.dumps(LECTURE_4_NOTES)),
+    NotesRow(14, 2, "Photosynthesis", "claude-opus-5-5", "2026-10-22T10:05:00+00:00", json.dumps(LECTURE_5_NOTES)),
+]
+
+
+@pytest.fixture(scope="session")
+def notes_index(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """An exam index with study notes for two lectures of bio101 and none for econ201."""
+    path = tmp_path_factory.mktemp("notes-library") / "exam" / "exam.sqlite"
+    return build(path, courses=COURSES, sources=[*SOURCES, LECTURE_5], passages=[*PASSAGES, LECTURE_5_PASSAGE],
+                 notes=NOTES, meta={"library_name": "Notes Library"})
